@@ -39,7 +39,7 @@ exit /b 1
 :python_found
 
 echo [1/3] กำลังตรวจสอบ dependencies...
-%PYTHON_CMD% -c "import requests, sqlalchemy" >nul 2>&1
+%PYTHON_CMD% -c "import requests" >nul 2>&1
 if errorlevel 1 (
     echo [INFO] กำลังติดตั้ง dependencies...
     %PIP_CMD% install -r requirements.txt

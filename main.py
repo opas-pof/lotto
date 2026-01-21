@@ -6,7 +6,10 @@ Script หลักสำหรับ scrap ข้อมูลผลหวยจ
 """
 
 from scraper import LotteryScraper
-from database import DatabaseManager
+try:
+    from database_simple import DatabaseManager
+except ImportError:
+    from database import DatabaseManager
 import sys
 
 def main():
@@ -45,16 +48,18 @@ def main():
         latest_phathana = db.get_latest_result('phathana')
         if latest_phathana:
             print(f"\nหวยพัฒนา:")
-            print(f"  วันที่: {latest_phathana.round_date.strftime('%Y-%m-%d')}")
-            print(f"  รอบที่: {latest_phathana.round_number}")
-            print(f"  เลขที่ออก: {latest_phathana.win_number}")
+            date_str = latest_phathana.get('round_date', '')[:10] if isinstance(latest_phathana, dict) else latest_phathana.round_date.strftime('%Y-%m-%d')
+            print(f"  วันที่: {date_str}")
+            print(f"  รอบที่: {latest_phathana.get('round_number', '') if isinstance(latest_phathana, dict) else latest_phathana.round_number}")
+            print(f"  เลขที่ออก: {latest_phathana.get('win_number', '') if isinstance(latest_phathana, dict) else latest_phathana.win_number}")
         
         latest_lasi = db.get_latest_result('lasi')
         if latest_lasi:
             print(f"\nหวยลาสี:")
-            print(f"  วันที่: {latest_lasi.round_date.strftime('%Y-%m-%d')}")
-            print(f"  รอบที่: {latest_lasi.round_number}")
-            print(f"  เลขที่ออก: {latest_lasi.win_number}")
+            date_str = latest_lasi.get('round_date', '')[:10] if isinstance(latest_lasi, dict) else latest_lasi.round_date.strftime('%Y-%m-%d')
+            print(f"  วันที่: {date_str}")
+            print(f"  รอบที่: {latest_lasi.get('round_number', '') if isinstance(latest_lasi, dict) else latest_lasi.round_number}")
+            print(f"  เลขที่ออก: {latest_lasi.get('win_number', '') if isinstance(latest_lasi, dict) else latest_lasi.win_number}")
         
         print("\n" + "=" * 50)
         print("เสร็จสิ้น!")
