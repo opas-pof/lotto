@@ -1,0 +1,12 @@
+services:
+  - type: worker
+    name: lottery-scraper
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python scheduler.py
+    plan: free
+
+crons:
+  - name: lottery-scraper-cron
+    schedule: "30 13 * * 1,3,5"  # UTC time: Mon, Wed, Fri at 13:30 (= 20:30 Thailand time)
+    command: python scheduler.py

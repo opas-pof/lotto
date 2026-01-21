@@ -36,9 +36,12 @@ echo.
 echo ชื่อ Task: %TASK_NAME%
 echo Script: %SCRIPT_PATH%
 echo.
+echo วันออกรางวัล: จันทร์, พุธ, ศุกร์
+echo เวลารัน: 20:30 น. (หลังจากสรุปผลเสร็จ)
+echo.
 
-REM สร้าง Task ที่รันทุก 6 ชั่วโมง
-schtasks /create /tn "%TASK_NAME%" /tr "\"%SCRIPT_PATH%\"" /sc hourly /mo 6 /f >nul 2>&1
+REM สร้าง Task ที่รันทุกวันจันทร์, พุธ, ศุกร์ เวลา 20:30
+schtasks /create /tn "%TASK_NAME%" /tr "\"%SCRIPT_PATH%\"" /sc weekly /d MON,WED,FRI /st 20:30 /f >nul 2>&1
 
 if errorlevel 1 (
     echo [ERROR] ไม่สามารถสร้าง Task ได้
@@ -49,12 +52,16 @@ if errorlevel 1 (
     echo 1. คลิกขวาที่ Command Prompt
     echo 2. เลือก "Run as administrator"
     echo 3. ไปที่โฟลเดอร์: cd /d "%~dp0"
-    echo 4. รัน: schtasks /create /tn "LotteryScraper" /tr "\"%SCRIPT_PATH%\"" /sc hourly /mo 6
+    echo 4. รันคำสั่งนี้:
+    echo    schtasks /create /tn "LotteryScraper" /tr "\"%SCRIPT_PATH%\"" /sc weekly /d MON,WED,FRI /st 20:30
     echo.
 ) else (
     echo [SUCCESS] สร้าง Task สำเร็จแล้ว!
     echo.
-    echo Task จะรันทุก 6 ชั่วโมงอัตโนมัติ
+    echo Task จะรันอัตโนมัติ:
+    echo   - ทุกวันจันทร์ เวลา 20:30 น.
+    echo   - ทุกวันพุธ เวลา 20:30 น.
+    echo   - ทุกวันศุกร์ เวลา 20:30 น.
     echo.
     echo ตรวจสอบ Task:
     echo   schtasks /query /tn "%TASK_NAME%"

@@ -57,7 +57,10 @@ lotto/
 - **Fly.io** - รองรับ scheduled tasks
 - **Vercel** - สำหรับ serverless functions
 
-ดูรายละเอียดเพิ่มเติมใน [DEPLOY.md](DEPLOY.md)
+**⚠️ หมายเหตุ:** ไฟล์ `.bat` เหมาะสำหรับ Windows local development เท่านั้น  
+สำหรับ production ใช้ `scheduler.py` + Cron/Task Scheduler
+
+ดูรายละเอียดเพิ่มเติมใน [README_DEPLOY.md](README_DEPLOY.md)
 
 ### หมายเหตุเกี่ยวกับ Cloudflare Workers
 
