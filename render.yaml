@@ -1,9 +1,0 @@
-services:
-  - type: worker
-    name: lottery-scraper
-    env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: python main.py
-    plan: free
-    # สำหรับ scheduled jobs ใช้ cron schedule
-    # schedule: "0 */6 * * *"  # รันทุก 6 ชั่วโมง

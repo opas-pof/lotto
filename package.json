@@ -1,0 +1,29 @@
+{
+  "name": "lotto-cloudflare-worker",
+  "version": "1.0.0",
+  "description": "ระบบ Scrap ข้อมูลผลหวยจาก laodl.com สำหรับ Cloudflare Worker",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:create": "wrangler d1 create lottery-db",
+    "db:migrate": "wrangler d1 execute lottery-db --file=./schema.sql",
+    "db:local": "wrangler d1 execute lottery-db --local --file=./schema.sql"
+  },
+  "keywords": [
+    "cloudflare",
+    "worker",
+    "lottery",
+    "scraper"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241127.0",
+    "typescript": "^5.3.3",
+    "wrangler": "^4.0.0"
+  }
+}
