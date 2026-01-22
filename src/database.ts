@@ -54,8 +54,30 @@ export class DatabaseManager {
     
     for (const resultData of results) {
       try {
-        // แปลงวันที่ (ISO format -> PostgreSQL timestamp)
-        const roundDate = new Date(resultData.roundDate).toISOString();
+        // แปลงวันที่ - เก็บเป็น UTC ใน database (PostgreSQL TIMESTAMPTZ)
+        // API laodl.com ส่งวันที่มาในรูปแบบ ISO string
+        // เก็บเป็น UTC ใน database (PostgreSQL จะจัดการ timezone อัตโนมัติ)
+        // เมื่อ query กลับมาจะได้เป็น UTC แล้วต้องแปลงเป็นเวลาไทยตอนแสดงผล
+        
+        // ตรวจสอบว่า dateString มี timezone indicator หรือไม่
+        const isUTC = resultData.roundDate.includes('Z') || 
+                     resultData.roundDate.includes('+00:00') ||
+                     resultData.roundDate.includes('+0000') ||
+                     resultData.roundDate.match(/\+00:00$/) ||
+                     resultData.roundDate.match(/\+0000$/);
+        
+        let roundDate: string;
+        
+        if (isUTC) {
+          // เป็น UTC แล้ว ใช้ได้เลย
+          roundDate = new Date(resultData.roundDate).toISOString();
+        } else {
+          // ถ้าไม่มี timezone indicator
+          // สร้าง Date object แล้วแปลงเป็น UTC ISO string
+          // PostgreSQL TIMESTAMPTZ จะเก็บเป็น UTC อัตโนมัติ
+          const date = new Date(resultData.roundDate);
+          roundDate = date.toISOString();
+        }
         
         const data = {
           source_id: resultData.id,

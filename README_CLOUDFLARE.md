@@ -1,12 +1,12 @@
 # ระบบ Scrap ข้อมูลผลหวย - Cloudflare Worker
 
-โปรเจกต์นี้ถูกแปลงจาก Python เป็น JavaScript/TypeScript เพื่อรันบน **Cloudflare Workers** พร้อม **Cloudflare D1** database
+โปรเจกต์นี้ถูกแปลงจาก Python เป็น JavaScript/TypeScript เพื่อรันบน **Cloudflare Workers** พร้อม **Supabase** (PostgreSQL) database
 
 ## คุณสมบัติ
 
 - ✅ ดึงข้อมูลผลหวยพัฒนา (ຜົນຫວຍພັດທະນາ)
 - ✅ ดึงข้อมูลผลหวยลาสี (ຜົນຫວຍລາສີ)
-- ✅ เก็บข้อมูลลง Cloudflare D1 database (SQLite)
+- ✅ เก็บข้อมูลลง Supabase (PostgreSQL)
 - ✅ ป้องกันข้อมูลซ้ำ (อัพเดทข้อมูลที่มีอยู่แล้ว)
 - ✅ รันอัตโนมัติผ่าน Cron Triggers (ทุกวันจันทร์, พุธ, ศุกร์ เวลา 20:30 น.)
 - ✅ API endpoints สำหรับดูข้อมูลและ trigger scraping แบบ manual
@@ -16,6 +16,7 @@
 - Node.js 18 หรือสูงกว่า
 - npm หรือ yarn
 - Cloudflare account (ฟรี)
+- Supabase account (ฟรี)
 
 ## การติดตั้ง
 
@@ -25,34 +26,26 @@
 npm install
 ```
 
-### 2. สร้าง Cloudflare D1 Database
+### 2. สร้าง Supabase Project และ Database
 
-```bash
-npm run db:create
+1. ไปที่ [Supabase Dashboard](https://app.supabase.com/)
+2. สร้าง project ใหม่
+3. รัน SQL จากไฟล์ `supabase_schema.sql` ใน SQL Editor
+4. ดึง API Keys จาก Project Settings > API
+
+ดูรายละเอียดเพิ่มเติมใน [SETUP_SUPABASE.md](./SETUP_SUPABASE.md)
+
+### 3. ตั้งค่า Environment Variables
+
+สร้างไฟล์ `.env.local`:
+
+```env
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_ANON_KEY=your-anon-key-here
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key-here
 ```
 
-คำสั่งนี้จะสร้าง D1 database และแสดง `database_id` ให้คุณคัดลอกไปใส่ใน `wrangler.toml`
-
-### 3. ตั้งค่า wrangler.toml
-
-เปิดไฟล์ `wrangler.toml` และใส่ `database_id` ที่ได้จากขั้นตอนที่ 2:
-
-```toml
-[[d1_databases]]
-binding = "DB"
-database_name = "lottery-db"
-database_id = "YOUR_DATABASE_ID_HERE"  # ใส่ตรงนี้
-```
-
-### 4. สร้าง database schema
-
-```bash
-# สำหรับ local development
-npm run db:local
-
-# สำหรับ production (หลังจาก deploy แล้ว)
-npm run db:migrate
-```
+ดูรายละเอียดเพิ่มเติมใน [README_ENV.md](./README_ENV.md)
 
 ## การใช้งาน
 
@@ -168,7 +161,7 @@ lotto/
 
 1. **Database**: 
    - Python: SQLAlchemy + SQLite/PostgreSQL
-   - JavaScript: Cloudflare D1 (SQLite)
+   - JavaScript: Supabase (PostgreSQL)
 
 2. **HTTP Client**:
    - Python: `requests` library
@@ -182,38 +175,54 @@ lotto/
    - Python: Render/Railway/Fly.io
    - JavaScript: Cloudflare Workers (ฟรี tier)
 
-## ข้อดีของ Cloudflare Workers
+## ข้อดีของ Cloudflare Workers + Supabase
 
-- ✅ **ฟรี tier**: 100,000 requests/วัน
+- ✅ **Cloudflare Workers ฟรี tier**: 100,000 requests/วัน
+- ✅ **Supabase ฟรี tier**: 500MB database, 2GB bandwidth
 - ✅ **เร็ว**: Edge computing, รันใกล้ผู้ใช้
 - ✅ **ไม่ต้องจัดการ server**: Serverless
-- ✅ **D1 Database**: SQLite-based, ฟรี 5GB storage
+- ✅ **PostgreSQL**: ฐานข้อมูลที่แข็งแกร่งและยืดหยุ่น
 - ✅ **Cron Triggers**: รองรับ scheduled tasks
+- ✅ **Row Level Security**: ความปลอดภัยระดับ database
 
 ## หมายเหตุ
 
-- D1 database ใช้ SQLite ซึ่งเหมาะสำหรับข้อมูลขนาดเล็กถึงกลาง
-- สำหรับข้อมูลขนาดใหญ่ (มากกว่า 5GB) อาจต้องใช้ PostgreSQL แทน
+- Supabase ใช้ PostgreSQL ซึ่งเหมาะสำหรับข้อมูลขนาดใหญ่
 - Cron Triggers ใช้ UTC time ต้องคำนวณเวลาท้องถิ่นให้ถูกต้อง
+- ใช้ Service Role Key สำหรับเขียนข้อมูล (bypass RLS)
 
 ## Troubleshooting
 
 ### Database ไม่พบ
 
 ตรวจสอบว่า:
-1. สร้าง D1 database แล้ว (`npm run db:create`)
-2. ใส่ `database_id` ใน `wrangler.toml` แล้ว
-3. รัน migration แล้ว (`npm run db:migrate`)
+1. สร้าง Supabase project แล้ว
+2. รัน SQL จาก `supabase_schema.sql` แล้ว
+3. ตั้งค่า environment variables ใน `.env.local` แล้ว
+
+### Error: "relation 'lottery_results' does not exist"
+
+**แก้ไข:** ยังไม่ได้สร้างตาราง - รัน SQL จาก `supabase_schema.sql` ใน Supabase SQL Editor
+
+### Error: "permission denied for table lottery_results"
+
+**แก้ไข:** 
+- ตรวจสอบว่าใช้ **Service Role Key** สำหรับเขียนข้อมูล
+- ตรวจสอบ RLS policy สำหรับอ่านข้อมูล
 
 ### Cron ไม่ทำงาน
 
 ตรวจสอบว่า:
 1. Deploy worker แล้ว (`npm run deploy`)
 2. Cron schedule ใน `wrangler.toml` ถูกต้อง
-3. ตรวจสอบใน Cloudflare Dashboard > Workers > Triggers
+3. ตั้งค่า secrets ใน Cloudflare แล้ว (`wrangler secret put`)
+4. ตรวจสอบใน Cloudflare Dashboard > Workers > Triggers
 
 ## ข้อมูลเพิ่มเติม
 
 - [Cloudflare Workers Docs](https://developers.cloudflare.com/workers/)
-- [Cloudflare D1 Docs](https://developers.cloudflare.com/d1/)
+- [Supabase Documentation](https://supabase.com/docs)
+- [Supabase JavaScript Client](https://supabase.com/docs/reference/javascript/introduction)
 - [Wrangler CLI Docs](https://developers.cloudflare.com/workers/wrangler/)
+- [SETUP_SUPABASE.md](./SETUP_SUPABASE.md) - คู่มือการตั้งค่า Supabase
+- [README_ENV.md](./README_ENV.md) - คู่มือการตั้งค่า Environment Variables
