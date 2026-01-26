@@ -70,7 +70,7 @@ export default {
     const db = new DatabaseManager(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
     
     try {
-      // ดึงข้อมูลผลหวยทั้งสองประเภท
+      // ดึงข้อมูลผลหวยพัฒนา
       console.log('กำลังดึงข้อมูลผลหวย...');
       const allResults = await scraper.getAllResults();
       
@@ -85,15 +85,6 @@ export default {
         console.warn('ไม่พบข้อมูลหวยพัฒนา');
       }
       
-      // บันทึกข้อมูลหวยลาสี
-      if (allResults.lasi && allResults.lasi.length > 0) {
-        console.log(`พบข้อมูลหวยลาสี ${allResults.lasi.length} รายการ`);
-        savedCounts.lasi = await db.saveLotteryResults(allResults.lasi, 'lasi');
-        console.log(`บันทึกข้อมูลหวยลาสี ${savedCounts.lasi} รายการ`);
-      } else {
-        console.warn('ไม่พบข้อมูลหวยลาสี');
-      }
-      
       // แสดงข้อมูลล่าสุด (แปลงเป็นเวลาไทย)
       const latestPhathana = await db.getLatestResult('phathana');
       if (latestPhathana) {
@@ -106,19 +97,6 @@ export default {
           minute: '2-digit'
         });
         console.log(`หวยพัฒนาล่าสุด: ${dateStr} ${timeStr} น. - ${latestPhathana.win_number}`);
-      }
-      
-      const latestLasi = await db.getLatestResult('lasi');
-      if (latestLasi) {
-        const date = new Date(latestLasi.round_date);
-        const thaiDate = new Date(date.getTime() + (7 * 60 * 60 * 1000));
-        const dateStr = thaiDate.toISOString().split('T')[0];
-        const timeStr = thaiDate.toLocaleTimeString('th-TH', { 
-          timeZone: 'Asia/Bangkok',
-          hour: '2-digit',
-          minute: '2-digit'
-        });
-        console.log(`หวยลาสีล่าสุด: ${dateStr} ${timeStr} น. - ${latestLasi.win_number}`);
       }
       
       console.log('เสร็จสิ้น!');
@@ -138,7 +116,7 @@ async function handleGetResults(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     
     // รับ query parameter สำหรับ filter
-    const type = url.searchParams.get('type'); // 'phathana' หรือ 'lasi'
+    const type = url.searchParams.get('type'); // 'phathana'
     
     const results = await db.getAllResults(type || undefined);
     
@@ -440,10 +418,6 @@ async function handleManualPage(): Promise<Response> {
                     <span id="scrapePhathanaIcon">🚀</span>
                     <span id="scrapePhathanaText">Scrape หวยพัฒนา</span>
                 </button>
-                <button class="btn-scrape" id="btnScrapeLasi" onclick="triggerScrape('lasi')" disabled style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
-                    <span id="scrapeLasiIcon">🚀</span>
-                    <span id="scrapeLasiText">Scrape หวยลาสี</span>
-                </button>
             </div>
         </div>
 
@@ -511,7 +485,6 @@ async function handleManualPage(): Promise<Response> {
                     dateSelect.addEventListener('change', function() {
                         const hasValue = !!this.value;
                         document.getElementById('btnScrapePhathana').disabled = !hasValue;
-                        document.getElementById('btnScrapeLasi').disabled = !hasValue;
                     });
                 } else {
                     throw new Error(data.error || 'ไม่พบวันที่');
@@ -536,16 +509,13 @@ async function handleManualPage(): Promise<Response> {
                 return;
             }
             
-            const btnId = lotteryType === 'phathana' ? 'btnScrapePhathana' : 'btnScrapeLasi';
-            const iconId = lotteryType === 'phathana' ? 'scrapePhathanaIcon' : 'scrapeLasiIcon';
-            const textId = lotteryType === 'phathana' ? 'scrapePhathanaText' : 'scrapeLasiText';
-            const btn = document.getElementById(btnId);
+            const btn = document.getElementById('btnScrapePhathana');
             const status = document.getElementById('status');
             const result = document.getElementById('result');
-            const scrapeIcon = document.getElementById(iconId);
-            const scrapeText = document.getElementById(textId);
+            const scrapeIcon = document.getElementById('scrapePhathanaIcon');
+            const scrapeText = document.getElementById('scrapePhathanaText');
             
-            const typeName = lotteryType === 'phathana' ? 'หวยพัฒนา (ຜົນຫວຍພັດທະນາ)' : 'หวยลาสี (ຜົນຫວຍລາສີ)';
+            const typeName = 'หวยพัฒนา (ຜົນຫວຍພັດທະນາ)';
 
             btn.disabled = true;
             scrapeIcon.innerHTML = '<div class="spinner"></div>';
@@ -612,7 +582,7 @@ async function handleManualPage(): Promise<Response> {
                                                          item.roundDate.includes('+00:00') ||
                                                          item.roundDate.includes('+0000');
                                             
-                                            let thaiDate: Date;
+                                            let thaiDate;
                                             if (isUTC) {
                                                 // แปลงจาก UTC เป็นเวลาไทย (UTC+7)
                                                 thaiDate = new Date(date.getTime() + (7 * 60 * 60 * 1000));
@@ -689,7 +659,7 @@ async function handleManualPage(): Promise<Response> {
             } finally {
                 btn.disabled = !dateSelect.value;
                 scrapeIcon.textContent = '🚀';
-                scrapeText.textContent = lotteryType === 'phathana' ? 'Scrape หวยพัฒนา' : 'Scrape หวยลาสี';
+                scrapeText.textContent = 'Scrape หวยพัฒนา';
             }
         }
 
@@ -718,7 +688,6 @@ async function handleManualPage(): Promise<Response> {
 
                     if (data.data && data.data.length > 0) {
                         const phathana = data.data.filter(item => item.lottery_type === 'phathana');
-                        const lasi = data.data.filter(item => item.lottery_type === 'lasi');
 
                         let tableHTML = \`
                             <h3>ข้อมูลผลหวย <span class="count-badge">\${data.count} รายการ</span></h3>
@@ -768,55 +737,6 @@ async function handleManualPage(): Promise<Response> {
                                     </tbody>
                                 </table>
                                 \${phathana.length > 10 ? \`<p style="margin-top: 10px; color: #666;">แสดง 10 รายการล่าสุด จากทั้งหมด \${phathana.length} รายการ</p>\` : ''}
-                            \`;
-                        }
-
-                        tableHTML += \`
-                            <h4 style="margin-top: 30px; margin-bottom: 10px; color: #f5576c;">
-                                หวยลาสี (ຜົນຫວຍລາສີ) - \${lasi.length} รายการ
-                            </h4>
-                        \`;
-
-                        if (lasi.length > 0) {
-                            tableHTML += \`
-                                <table class="data-table">
-                                    <thead>
-                                        <tr>
-                                            <th>วันที่</th>
-                                            <th>รอบที่</th>
-                                            <th>เลขที่ออก</th>
-                                            <th>สถานะ</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        \${lasi.slice(0, 10).map(item => {
-                                            // แปลงเป็นเวลาไทย (UTC+7)
-                                            // ข้อมูลจาก Supabase เก็บเป็น UTC (TIMESTAMPTZ)
-                                            const date = new Date(item.round_date);
-                                            const thaiDate = new Date(date.getTime() + (7 * 60 * 60 * 1000));
-                                            const dayNames = ['อา', 'จ', 'อ', 'พ', 'พฤ', 'ศ', 'ส'];
-                                            const dayIndex = thaiDate.getUTCDay();
-                                            const dayName = dayNames[dayIndex];
-                                            const dateStr = thaiDate.toLocaleString('th-TH', {
-                                                timeZone: 'Asia/Bangkok',
-                                                year: 'numeric',
-                                                month: '2-digit',
-                                                day: '2-digit',
-                                                hour: '2-digit',
-                                                minute: '2-digit'
-                                            });
-                                            return \`
-                                                <tr>
-                                                    <td>\${dayName} \${dateStr}</td>
-                                                    <td>\${item.round_number || '-'}</td>
-                                                    <td><strong style="font-size: 18px; color: #f5576c;">\${item.win_number || '-'}</strong></td>
-                                                    <td>\${item.is_jackpot ? '🎯 Jackpot' : '✓'}</td>
-                                                </tr>
-                                            \`;
-                                        }).join('')}
-                                    </tbody>
-                                </table>
-                                \${lasi.length > 10 ? \`<p style="margin-top: 10px; color: #666;">แสดง 10 รายการล่าสุด จากทั้งหมด \${lasi.length} รายการ</p>\` : ''}
                             \`;
                         }
 
@@ -937,13 +857,6 @@ async function handleGetAvailableDates(env: Env): Promise<Response> {
       });
     }
     
-    if (allResults.lasi) {
-      allResults.lasi.forEach(item => {
-        const date = toThaiDate(item.roundDate); // แปลงเป็นเวลาไทย
-        dates.add(date);
-      });
-    }
-    
     // เรียงวันที่จากใหม่ไปเก่า
     const sortedDates = Array.from(dates).sort((a, b) => b.localeCompare(a));
     
@@ -972,8 +885,8 @@ async function handleGetAvailableDates(env: Env): Promise<Response> {
 
 /**
  * จัดการ POST /api/scrape - trigger scraping แบบ manual
- * รองรับ parameters: date (YYYY-MM-DD) และ type ('phathana' หรือ 'lasi')
- * ถ้าไม่ระบุ type จะ scrape ทั้งสองประเภท (สำหรับ cron)
+ * รองรับ parameters: date (YYYY-MM-DD) และ type ('phathana')
+ * ถ้าไม่ระบุ type จะ scrape หวยพัฒนา (สำหรับ cron)
  */
 async function handleScrape(request: Request, env: Env): Promise<Response> {
   const scraper = new LotteryScraper();
@@ -987,10 +900,11 @@ async function handleScrape(request: Request, env: Env): Promise<Response> {
     
     // ลองอ่านจาก request body ก่อน (JSON)
     try {
-      const body = await request.json().catch(() => null);
-      if (body) {
+      const bodyJson = await request.json().catch(() => null);
+      if (bodyJson && typeof bodyJson === 'object' && bodyJson !== null) {
+        const body = bodyJson as { date?: string; type?: string };
         if (body.date) targetDate = body.date;
-        if (body.type) targetType = body.type; // 'phathana' หรือ 'lasi'
+        if (body.type) targetType = body.type; // 'phathana'
       }
     } catch {
       // ถ้าไม่มี body หรือไม่ใช่ JSON ให้อ่านจาก query string
@@ -1000,30 +914,19 @@ async function handleScrape(request: Request, env: Env): Promise<Response> {
     
     // ดึงข้อมูลผลหวยตาม type ที่ระบุ
     let phathanaResults: any[] | null = null;
-    let lasiResults: any[] | null = null;
     
     if (targetType === 'phathana') {
       phathanaResults = await scraper.getPhathanaResults();
-    } else if (targetType === 'lasi') {
-      lasiResults = await scraper.getLasiResults();
     } else {
-      // ไม่ระบุ type = ดึงทั้งสองประเภท (สำหรับ cron)
+      // ไม่ระบุ type = ดึงหวยพัฒนา (สำหรับ cron)
       const allResults = await scraper.getAllResults();
       phathanaResults = allResults.phathana;
-      lasiResults = allResults.lasi;
     }
     
     // Filter ตามวันที่ถ้ามีการระบุ
     if (targetDate) {
       if (phathanaResults) {
         phathanaResults = phathanaResults.filter(item => {
-          const itemDate = toThaiDate(item.roundDate);
-          return itemDate === targetDate;
-        });
-      }
-      
-      if (lasiResults) {
-        lasiResults = lasiResults.filter(item => {
           const itemDate = toThaiDate(item.roundDate);
           return itemDate === targetDate;
         });
@@ -1038,15 +941,8 @@ async function handleScrape(request: Request, env: Env): Promise<Response> {
         winNumber?: string;
         isJackpot?: boolean;
       }>;
-      lasi: Array<{
-        roundDate: string;
-        roundNumber?: string;
-        winNumber?: string;
-        isJackpot?: boolean;
-      }>;
     } = {
-      phathana: [],
-      lasi: []
+      phathana: []
     };
     
     // บันทึกข้อมูลหวยพัฒนา
@@ -1054,18 +950,6 @@ async function handleScrape(request: Request, env: Env): Promise<Response> {
       savedCounts.phathana = await db.saveLotteryResults(phathanaResults, 'phathana');
       // เก็บข้อมูลที่ scrape มาเพื่อแสดงผล
       scrapedData.phathana = phathanaResults.map(item => ({
-        roundDate: item.roundDate,
-        roundNumber: item.roundNumber,
-        winNumber: item.winNumber,
-        isJackpot: item.isjackpot
-      }));
-    }
-    
-    // บันทึกข้อมูลหวยลาสี
-    if (lasiResults && lasiResults.length > 0) {
-      savedCounts.lasi = await db.saveLotteryResults(lasiResults, 'lasi');
-      // เก็บข้อมูลที่ scrape มาเพื่อแสดงผล
-      scrapedData.lasi = lasiResults.map(item => ({
         roundDate: item.roundDate,
         roundNumber: item.roundNumber,
         winNumber: item.winNumber,
