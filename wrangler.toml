@@ -4,10 +4,13 @@ compatibility_date = "2024-11-27"
 
 # Supabase Environment Variables
 # สำหรับ local development ใช้ .env หรือ .env.local
-# สำหรับ production ใช้ wrangler secret put
-[vars]
-# SUPABASE_URL จะถูกโหลดจาก .env.local หรือตั้งเป็น secret
-# SUPABASE_URL = "https://your-project.supabase.co"
+# สำหรับ production ใช้ wrangler secret put (แนะนำ)
+#
+# ⚠️ หมายเหตุ: อย่าใส่ [vars] section ไว้ถ้าใช้ Secrets
+# เพราะจะทำให้ Variables ใน Dashboard หายไปเมื่อ deploy
+#
+# [vars]
+# SUPABASE_URL = "https://your-project.supabase.co"  # ไม่แนะนำ - จะ commit ขึ้น git
 
 # Cron Triggers - รันทุกวันจันทร์, พุธ, ศุกร์ เวลา 20:30 น. (ไทย = UTC+7)
 # หมายเหตุ: Cloudflare Workers ใช้ UTC time

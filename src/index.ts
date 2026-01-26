@@ -62,6 +62,7 @@ export default {
   /**
    * จัดการ Cron Triggers (scheduled tasks)
    * รันทุกวันจันทร์, พุธ, ศุกร์ เวลา 20:30 น. (UTC+7)
+   * ดึงข้อมูลหวยพัฒนาเฉพาะ 5 รายการล่าสุด
    */
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     console.log('Cron trigger fired at:', new Date().toISOString());
@@ -70,16 +71,21 @@ export default {
     const db = new DatabaseManager(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
     
     try {
-      // ดึงข้อมูลผลหวยพัฒนา
+      // ดึงข้อมูลผลหวยพัฒนา (เฉพาะ 5 รายการล่าสุด)
       console.log('กำลังดึงข้อมูลผลหวย...');
-      const allResults = await scraper.getAllResults();
+      const phathanaResults = await scraper.getPhathanaResults();
       
       const savedCounts: Record<string, number> = {};
       
-      // บันทึกข้อมูลหวยพัฒนา
-      if (allResults.phathana && allResults.phathana.length > 0) {
-        console.log(`พบข้อมูลหวยพัฒนา ${allResults.phathana.length} รายการ`);
-        savedCounts.phathana = await db.saveLotteryResults(allResults.phathana, 'phathana');
+      // บันทึกข้อมูลหวยพัฒนา (เฉพาะ 5 รายการล่าสุด)
+      if (phathanaResults && phathanaResults.length > 0) {
+        // เรียงตาม roundDate จากใหม่ไปเก่า และเอาแค่ 5 รายการล่าสุด
+        const sortedResults = phathanaResults
+          .sort((a, b) => new Date(b.roundDate).getTime() - new Date(a.roundDate).getTime())
+          .slice(0, 5);
+        
+        console.log(`พบข้อมูลหวยพัฒนา ${phathanaResults.length} รายการ (เลือก 5 รายการล่าสุด)`);
+        savedCounts.phathana = await db.saveLotteryResults(sortedResults, 'phathana');
         console.log(`บันทึกข้อมูลหวยพัฒนา ${savedCounts.phathana} รายการ`);
       } else {
         console.warn('ไม่พบข้อมูลหวยพัฒนา');
@@ -885,8 +891,10 @@ async function handleGetAvailableDates(env: Env): Promise<Response> {
 
 /**
  * จัดการ POST /api/scrape - trigger scraping แบบ manual
- * รองรับ parameters: date (YYYY-MM-DD) และ type ('phathana')
- * ถ้าไม่ระบุ type จะ scrape หวยพัฒนา (สำหรับ cron)
+ * รองรับ parameters: date (YYYY-MM-DD)
+ * - ถ้าไม่ระบุ date: ดึงเฉพาะ 5 รายการล่าสุดของหวยพัฒนา
+ * - ถ้าระบุ date: ดึงเฉพาะวันที่นั้นของหวยพัฒนา
+ * ดึงเฉพาะหวยพัฒนา ไม่ดึงหวยลาสี
  */
 async function handleScrape(request: Request, env: Env): Promise<Response> {
   const scraper = new LotteryScraper();
@@ -912,24 +920,24 @@ async function handleScrape(request: Request, env: Env): Promise<Response> {
       targetType = url.searchParams.get('type');
     }
     
-    // ดึงข้อมูลผลหวยตาม type ที่ระบุ
+    // ดึงข้อมูลผลหวยตาม type ที่ระบุ (เฉพาะหวยพัฒนา)
     let phathanaResults: any[] | null = null;
     
-    if (targetType === 'phathana') {
-      phathanaResults = await scraper.getPhathanaResults();
-    } else {
-      // ไม่ระบุ type = ดึงหวยพัฒนา (สำหรับ cron)
-      const allResults = await scraper.getAllResults();
-      phathanaResults = allResults.phathana;
-    }
+    // ดึงเฉพาะหวยพัฒนา (ไม่ดึง lasi)
+    phathanaResults = await scraper.getPhathanaResults();
     
-    // Filter ตามวันที่ถ้ามีการระบุ
-    if (targetDate) {
-      if (phathanaResults) {
+    if (phathanaResults && phathanaResults.length > 0) {
+      // Filter ตามวันที่ถ้ามีการระบุ
+      if (targetDate) {
         phathanaResults = phathanaResults.filter(item => {
           const itemDate = toThaiDate(item.roundDate);
           return itemDate === targetDate;
         });
+      } else {
+        // ถ้าไม่ระบุ date = เอาแค่ 5 รายการล่าสุด
+        phathanaResults = phathanaResults
+          .sort((a, b) => new Date(b.roundDate).getTime() - new Date(a.roundDate).getTime())
+          .slice(0, 5);
       }
     }
     

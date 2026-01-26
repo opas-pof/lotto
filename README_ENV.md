@@ -44,26 +44,117 @@ Wrangler จะโหลด environment variables จาก `.env.local` อั�
 
 ## สำหรับ Production (Cloudflare)
 
-### วิธีที่ 1: ใช้ Wrangler Secrets (แนะนำ)
+### ⚠️ ปัญหาที่พบบ่อย: Variables หายไปหลัง Deploy
+
+**สาเหตุ:**
+- เมื่อ deploy ด้วย `wrangler deploy` ถ้า `wrangler.toml` มี `[vars]` section (แม้เป็น comment) อาจทำให้ variables ที่ตั้งใน Dashboard หายไป
+- Variables ใน Dashboard จะถูกเขียนทับด้วย `wrangler.toml` เมื่อ deploy
+
+**วิธีแก้ไข:** ใช้ **Secrets** แทน Variables (แนะนำ) เพราะจะไม่หายไปเมื่อ deploy
+
+---
+
+### วิธีที่ 1: ใช้ Wrangler Secrets (แนะนำที่สุด) ⭐
+
+**ข้อดี:**
+- ✅ ไม่หายไปเมื่อ deploy
+- ✅ ปลอดภัยกว่า (encrypted)
+- ✅ ไม่ต้องกังวลเรื่อง `wrangler.toml`
+
+**ขั้นตอน:**
 
 ```bash
-# ตั้งค่า secrets
+# ตั้งค่า secrets (จะให้ paste ค่าเข้าไปทีละตัว)
 wrangler secret put SUPABASE_URL
 wrangler secret put SUPABASE_ANON_KEY
 wrangler secret put SUPABASE_SERVICE_ROLE_KEY
 ```
 
-เมื่อรันคำสั่ง จะให้คุณ paste ค่าเข้าไป
+**ตัวอย่างการใช้งาน:**
+```bash
+$ wrangler secret put SUPABASE_URL
+Enter the secret value: https://hnbsusnlvdurxzncdbjv.supabase.co
+✨ Success! Uploaded secret SUPABASE_URL
+```
 
-### วิธีที่ 2: ใช้ Cloudflare Dashboard
+**ตรวจสอบ secrets ที่ตั้งไว้:**
+```bash
+wrangler secret list
+```
 
+**ลบ secret:**
+```bash
+wrangler secret delete SUPABASE_URL
+```
+
+---
+
+### วิธีที่ 2: ใช้ Cloudflare Dashboard (ไม่แนะนำ)
+
+⚠️ **ข้อควรระวัง:** Variables ที่ตั้งใน Dashboard อาจหายไปเมื่อ deploy ด้วย `wrangler deploy`
+
+**ขั้นตอน:**
 1. ไปที่ [Cloudflare Dashboard](https://dash.cloudflare.com/)
-2. เลือก Workers & Pages > lotto-worker
-3. ไปที่ Settings > Variables
-4. เพิ่ม Environment Variables:
+2. เลือก **Workers & Pages** > `lotto-worker`
+3. ไปที่ **Settings** > **Variables and Secrets**
+4. เพิ่ม **Environment Variables**:
    - `SUPABASE_URL`
    - `SUPABASE_ANON_KEY`
    - `SUPABASE_SERVICE_ROLE_KEY`
+
+**หรือใช้ Secrets ใน Dashboard:**
+1. ไปที่ **Settings** > **Variables and Secrets**
+2. คลิก **Add secret**
+3. ใส่ชื่อและค่า (จะถูก encrypt อัตโนมัติ)
+
+---
+
+### วิธีที่ 3: ใช้ wrangler.toml [vars] (ไม่แนะนำสำหรับ sensitive data)
+
+⚠️ **ไม่แนะนำ** เพราะ:
+- ต้อง commit ค่าเข้า git (ไม่ปลอดภัย)
+- อาจถูกเขียนทับเมื่อ deploy
+
+**ถ้าต้องการใช้วิธีนี้:**
+```toml
+[vars]
+SUPABASE_URL = "https://hnbsusnlvdurxzncdbjv.supabase.co"
+SUPABASE_ANON_KEY = "your-key-here"
+SUPABASE_SERVICE_ROLE_KEY = "your-key-here"
+```
+
+**⚠️ ห้าม commit `wrangler.toml` ที่มี secrets จริง!**
+
+---
+
+## วิธีแก้ไขเมื่อ Variables หายไป
+
+### สถานการณ์: ตั้งค่า Variables ใน Dashboard แล้ว แต่หายไปหลัง deploy
+
+**วิธีแก้ไข:**
+
+1. **ลบ `[vars]` section ออกจาก `wrangler.toml`** (ถ้ามี):
+   ```toml
+   # ลบหรือ comment ส่วนนี้
+   # [vars]
+   # SUPABASE_URL = "..."
+   ```
+
+2. **ใช้ Secrets แทน:**
+   ```bash
+   wrangler secret put SUPABASE_URL
+   wrangler secret put SUPABASE_ANON_KEY
+   wrangler secret put SUPABASE_SERVICE_ROLE_KEY
+   ```
+
+3. **หรือตั้งค่า Secrets ใน Dashboard:**
+   - ไปที่ **Settings** > **Variables and Secrets**
+   - คลิก **Add secret** แทน **Add variable**
+
+**ทำไมต้องใช้ Secrets?**
+- Secrets จะไม่ถูกเขียนทับเมื่อ deploy
+- ปลอดภัยกว่า (encrypted)
+- เป็น best practice สำหรับ sensitive data
 
 ---
 

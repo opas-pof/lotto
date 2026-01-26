@@ -191,7 +191,93 @@ curl https://lotto-worker.your-subdomain.workers.dev/api/results
    - **Description**: "At 01:30 PM UTC, only on Monday, Wednesday, and Friday"
    - **Next Run**: ควรแสดงวันจันทร์, พุธ, หรือศุกร์ เวลา 13:30 UTC (20:30 น. ไทย)
 
-### 5. ตรวจสอบ Logs
+### 5. ทดสอบ Scheduled Event โดยไม่ต้องรอ Cron (แนะนำ)
+
+มีหลายวิธีทดสอบว่า scheduled function ทำงานได้จริง:
+
+#### วิธีที่ 1: ใช้ Cloudflare Dashboard (ง่ายที่สุด) ⭐
+
+1. ไปที่ [Cloudflare Dashboard](https://dash.cloudflare.com/)
+2. เลือก **Workers & Pages** > `lotto-worker`
+3. ไปที่ **Triggers** tab
+4. คลิกที่ **Cron Trigger** ที่ตั้งไว้
+5. คลิกปุ่ม **"Trigger"** หรือ **"Test trigger"** (ถ้ามี)
+6. ระบบจะรัน scheduled function ทันที
+7. ไปดู **Logs** tab เพื่อดูผลลัพธ์
+
+**หมายเหตุ:** บางเวอร์ชันของ Cloudflare Dashboard อาจไม่มีปุ่ม Test trigger โดยตรง ในกรณีนี้ใช้วิธีอื่นแทน
+
+#### วิธีที่ 2: ใช้ Manual Control Page (แนะนำสำหรับการทดสอบ) ⭐
+
+เปิดเบราว์เซอร์ไปที่:
+```
+https://lotto-worker.your-subdomain.workers.dev/manual
+```
+
+**ขั้นตอน:**
+1. คลิกปุ่ม **"โหลดวันที่ที่มี"** เพื่อดึงวันที่ที่มีใน API
+2. เลือกวันที่จาก dropdown
+3. คลิกปุ่ม **"Scrape หวยพัฒนา"**
+4. ระบบจะดึงข้อมูลและบันทึกลง Supabase ทันที
+5. ดูผลลัพธ์ที่แสดงบนหน้าเว็บ
+
+**ข้อดี:**
+- ✅ ทดสอบได้ทันที ไม่ต้องรอ cron
+- ✅ เห็นผลลัพธ์แบบ real-time
+- ✅ สามารถเลือกวันที่เฉพาะได้
+- ✅ เหมาะสำหรับการ debug
+
+#### วิธีที่ 3: ใช้ API Endpoint โดยตรง
+
+```bash
+# Trigger scraping (ดึงข้อมูลทั้งหมด)
+curl -X POST https://lotto-worker.your-subdomain.workers.dev/api/scrape
+
+# หรือ trigger สำหรับวันที่เฉพาะ
+curl -X POST https://lotto-worker.your-subdomain.workers.dev/api/scrape \
+  -H "Content-Type: application/json" \
+  -d '{"date": "2024-11-27", "type": "phathana"}'
+```
+
+**Expected Response:**
+```json
+{
+  "success": true,
+  "message": "Scraping completed for date: 2024-11-27 (phathana)",
+  "date": "2024-11-27",
+  "type": "phathana",
+  "saved": {
+    "phathana": 5
+  },
+  "data": {
+    "phathana": [
+      {
+        "roundDate": "2024-11-27T13:30:00.000Z",
+        "roundNumber": "001",
+        "winNumber": "12345",
+        "isJackpot": false
+      }
+    ]
+  }
+}
+```
+
+#### วิธีที่ 4: ใช้ Wrangler CLI (สำหรับ Local Testing)
+
+```bash
+# รัน local development server
+npm run dev
+
+# ในอีก terminal หนึ่ง trigger scraping
+curl -X POST http://localhost:8787/api/scrape
+```
+
+**ข้อดี:**
+- ✅ เห็น logs แบบ real-time ใน terminal
+- ✅ ไม่นับ quota ของ Cloudflare
+- ✅ ดีสำหรับการพัฒนาและ debug
+
+### 6. ตรวจสอบ Logs
 
 1. ไปที่ **Workers & Pages** > `lotto-worker`
 2. ไปที่ **Logs** tab
