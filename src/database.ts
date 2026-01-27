@@ -17,6 +17,8 @@ export interface LotteryResultRow {
   is_close_sale: boolean;
   round_status?: number | null;
   is_jackpot: boolean;
+  animal_name?: string | null; // ชื่อนามสัตว์ (จาก Sanook)
+  phathana_numbers?: string[] | null; // หวยลาวพัฒนา 5 ชุด (array ของ 2 หลัก)
   created_at?: string;
   updated_at?: string;
 }
@@ -47,6 +49,8 @@ export class DatabaseManager {
       isCloseSale?: boolean;
       roundStatus?: number;
       isjackpot?: boolean;
+      animalName?: string; // ชื่อนามสัตว์ (จาก Sanook)
+      phathanaNumbers?: string[]; // หวยลาวพัฒนา 5 ชุด (array ของ 2 หลัก)
     }>,
     lotteryType: string
   ): Promise<number> {
@@ -91,6 +95,8 @@ export class DatabaseManager {
           is_close_sale: resultData.isCloseSale || false,
           round_status: resultData.roundStatus || null,
           is_jackpot: resultData.isjackpot || false,
+          animal_name: resultData.animalName || null,
+          phathana_numbers: resultData.phathanaNumbers || null,
           updated_at: new Date().toISOString()
         };
         
@@ -157,5 +163,63 @@ export class DatabaseManager {
     }
     
     return data as LotteryResultRow[];
+  }
+  
+  /**
+   * อัพเดทข้อมูลจาก Sanook (animal_name และ phathana_numbers)
+   * ใช้ round_date และ lottery_type เป็น key
+   */
+  async updateSanookData(
+    date: string, // YYYY-MM-DD
+    animalName: string | null,
+    phathanaNumbers: string[] | null,
+    lotteryType: string = 'phathana'
+  ): Promise<number> {
+    try {
+      // แปลงวันที่เป็นช่วงเวลา (เริ่มต้นวัน - สิ้นสุดวัน)
+      const startDate = new Date(date + 'T00:00:00Z').toISOString();
+      const endDate = new Date(date + 'T23:59:59Z').toISOString();
+      
+      // หาข้อมูลที่มี round_date อยู่ในช่วงวันที่นี้
+      const { data: existingData, error: findError } = await this.supabase
+        .from('lottery_results')
+        .select('id, source_id')
+        .eq('lottery_type', lotteryType)
+        .gte('round_date', startDate)
+        .lte('round_date', endDate)
+        .order('round_date', { ascending: false })
+        .limit(1);
+      
+      if (findError) {
+        console.error('Error finding existing data:', findError);
+        return 0;
+      }
+      
+      if (!existingData || existingData.length === 0) {
+        console.warn(`ไม่พบข้อมูลสำหรับวันที่ ${date}`);
+        return 0;
+      }
+      
+      // อัพเดทข้อมูล
+      const { error: updateError } = await this.supabase
+        .from('lottery_results')
+        .update({
+          animal_name: animalName,
+          phathana_numbers: phathanaNumbers,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', existingData[0].id);
+      
+      if (updateError) {
+        console.error('Error updating Sanook data:', updateError);
+        return 0;
+      }
+      
+      console.log(`อัพเดทข้อมูล Sanook สำหรับวันที่ ${date} สำเร็จ`);
+      return 1;
+    } catch (error) {
+      console.error('Error updating Sanook data:', error);
+      return 0;
+    }
   }
 }

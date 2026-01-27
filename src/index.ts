@@ -3,6 +3,7 @@
  */
 
 import { LotteryScraper } from './scraper';
+import { SanookScraper, SanookLotteryResult } from './sanook-scraper';
 import { DatabaseManager } from './database';
 
 export interface Env {
@@ -37,6 +38,18 @@ export default {
     if (url.pathname === '/api/scrape' || url.pathname === '/api/scrape/') {
       if (request.method === 'POST') {
         return handleScrape(request, env);
+      } else {
+        return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+          status: 405,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+    }
+    
+    // API endpoint สำหรับทดสอบ Sanook scraper
+    if (url.pathname === '/api/test-sanook' || url.pathname === '/api/test-sanook/') {
+      if (request.method === 'POST') {
+        return handleTestSanook(env);
       } else {
         return new Response(JSON.stringify({ error: 'Method not allowed' }), {
           status: 405,
@@ -89,6 +102,29 @@ export default {
         console.log(`บันทึกข้อมูลหวยพัฒนา ${savedCounts.phathana} รายการ`);
       } else {
         console.warn('ไม่พบข้อมูลหวยพัฒนา');
+      }
+      
+      // ดึงข้อมูลจาก Sanook (ชื่อนามสัตว์และหวยลาวพัฒนา)
+      console.log('กำลังดึงข้อมูลจาก Sanook...');
+      const sanookScraper = new SanookScraper();
+      const { results: sanookResults } = await sanookScraper.getLatestResults(5);
+      
+      if (sanookResults && sanookResults.length > 0) {
+        console.log(`พบข้อมูลจาก Sanook ${sanookResults.length} งวด`);
+        
+        // อัพเดทข้อมูลแต่ละงวด
+        for (const sanookResult of sanookResults) {
+          await db.updateSanookData(
+            sanookResult.date,
+            sanookResult.animalName || null,
+            sanookResult.phathanaNumbers.length > 0 ? sanookResult.phathanaNumbers : null,
+            'phathana'
+          );
+        }
+        
+        console.log(`อัพเดทข้อมูล Sanook สำเร็จ ${sanookResults.length} งวด`);
+      } else {
+        console.warn('ไม่พบข้อมูลจาก Sanook');
       }
       
       // แสดงข้อมูลล่าสุด (แปลงเป็นเวลาไทย)
@@ -434,9 +470,24 @@ async function handleManualPage(): Promise<Response> {
             </button>
         </div>
 
+        <div class="date-selector" style="margin-top: 30px;">
+            <h3>🧪 ทดสอบ Sanook Scraper</h3>
+            <p style="color: #666; font-size: 14px; margin-bottom: 15px;">
+                ดึงข้อมูลชื่อนามสัตว์และหวยลาวพัฒนา 5 ชุดจาก Sanook
+            </p>
+            <div class="date-controls">
+                <button class="btn-load" id="btnTestSanook" onclick="testSanookScraper()">
+                    <span id="testSanookIcon">🔍</span>
+                    <span id="testSanookText">ทดสอบดึงข้อมูล Sanook</span>
+                </button>
+            </div>
+        </div>
+
         <div id="status" class="status"></div>
 
         <div id="result" class="result"></div>
+        
+        <div id="sanookResult" class="result" style="display: none;"></div>
     </div>
 
     <script>
@@ -775,6 +826,124 @@ async function handleManualPage(): Promise<Response> {
                 viewText.textContent = 'ดูข้อมูล';
             }
         }
+        
+        async function testSanookScraper() {
+            const btn = document.getElementById('btnTestSanook');
+            const status = document.getElementById('status');
+            const sanookResult = document.getElementById('sanookResult');
+            const testSanookIcon = document.getElementById('testSanookIcon');
+            const testSanookText = document.getElementById('testSanookText');
+
+            btn.disabled = true;
+            testSanookIcon.innerHTML = '<div class="spinner"></div>';
+            testSanookText.textContent = 'กำลังดึงข้อมูล...';
+            
+            status.className = 'status loading show';
+            status.textContent = '⏳ กำลังดึงข้อมูลจาก Sanook...';
+            sanookResult.style.display = 'none';
+            sanookResult.classList.remove('show');
+
+            try {
+                const response = await fetch(\`\${API_BASE}/api/test-sanook\`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                const data = await response.json();
+
+                if (response.ok && data.success) {
+                    status.className = 'status success show';
+                    status.textContent = \`✅ ดึงข้อมูลจาก Sanook สำเร็จ! พบ \${data.count} งวด\`;
+
+                    // แสดง Debug Logs
+                    let resultHTML = \`
+                        <h3>ผลลัพธ์การ Scrape จาก Sanook <span class="count-badge">\${data.count} งวด</span></h3>
+                    \`;
+                    
+                    // แสดง Debug Logs
+                    if (data.debugLogs && data.debugLogs.length > 0) {
+                        resultHTML += \`
+                            <div style="margin-top: 15px; padding: 15px; background: #f5f5f5; border-radius: 8px; border-left: 4px solid #667eea;">
+                                <h4 style="margin: 0 0 10px 0; color: #667eea;">🔍 Debug Logs:</h4>
+                                <div style="font-family: monospace; font-size: 12px; color: #333; max-height: 300px; overflow-y: auto;">
+                        \`;
+                        data.debugLogs.forEach(log => {
+                            resultHTML += \`<div style="margin-bottom: 5px; padding: 5px; background: white; border-radius: 4px;">\${log}</div>\`;
+                        });
+                        resultHTML += \`
+                                </div>
+                            </div>
+                        \`;
+                    }
+                    
+                    // แสดงข้อมูลทั้งหมด
+                    if (data.results && data.results.length > 0) {
+                        resultHTML += \`
+                            <div style="margin-top: 20px;">
+                                <h4 style="margin: 0 0 15px 0;">📊 ข้อมูลที่ดึงได้ทั้งหมด (\${data.results.length} งวด):</h4>
+                        \`;
+                        
+                        data.results.forEach((item, index) => {
+                            const phathanaDisplay = item.phathanaNumbers && item.phathanaNumbers.length > 0
+                                ? item.phathanaNumbers.join(' ')
+                                : '-';
+                            
+                            resultHTML += \`
+                                <div class="result-item" style="margin-top: \${index > 0 ? '15px' : '0'}; padding: 15px; background: white; border-radius: 8px; border: 1px solid #e0e0e0;">
+                                    <strong style="font-size: 16px; color: #667eea;">งวดที่ \${index + 1}: \${item.date}</strong>
+                                    <div style="margin-top: 10px;">
+                                        <div><strong>ชื่อนามสัตว์:</strong> <span style="color: #333;">\${item.animalName || '-'}</span></div>
+                                        <div style="margin-top: 5px;"><strong>หวยลาวพัฒนา (5 ชุด):</strong> <span style="font-size: 18px; color: #667eea; font-weight: bold;">\${phathanaDisplay}</span></div>
+                                        <div style="margin-top: 5px; color: #666; font-size: 12px; font-family: monospace;">Raw (10 หลัก): \${item.phathanaNumbersRaw || '-'}</div>
+                                    </div>
+                                </div>
+                            \`;
+                        });
+                        
+                        resultHTML += \`
+                            </div>
+                        \`;
+                    } else {
+                        resultHTML += \`
+                            <div style="margin-top: 20px; padding: 15px; background: #fff3cd; border-radius: 8px; border-left: 4px solid #ffc107;">
+                                <h4 style="margin: 0 0 10px 0; color: #856404;">📭 ไม่พบข้อมูล</h4>
+                                <p style="color: #856404; margin: 0;">
+                                    ไม่พบข้อมูลจาก Sanook - ตรวจสอบ Debug Logs ด้านบนเพื่อดูรายละเอียด
+                                </p>
+                            </div>
+                        \`;
+                    }
+                    
+                    resultHTML += \`
+                        <p style="margin-top: 15px; color: #666; font-size: 14px; padding: 10px; background: #e7f3ff; border-radius: 8px;">
+                            💡 <strong>หมายเหตุ:</strong> ข้อมูลนี้เป็นการทดสอบเท่านั้น ยังไม่มีการบันทึกลงฐานข้อมูล
+                        </p>
+                    \`;
+                    
+                    sanookResult.innerHTML = resultHTML;
+                    sanookResult.style.display = 'block';
+                    sanookResult.classList.add('show');
+                } else {
+                    throw new Error(data.error || 'เกิดข้อผิดพลาด');
+                }
+            } catch (error) {
+                status.className = 'status error show';
+                status.textContent = \`❌ เกิดข้อผิดพลาด: \${error.message}\`;
+                
+                sanookResult.style.display = 'block';
+                sanookResult.classList.add('show');
+                sanookResult.innerHTML = \`
+                    <h3>❌ เกิดข้อผิดพลาด</h3>
+                    <p style="color: #721c24;">\${error.message}</p>
+                \`;
+            } finally {
+                btn.disabled = false;
+                testSanookIcon.textContent = '🔍';
+                testSanookText.textContent = 'ทดสอบดึงข้อมูล Sanook';
+            }
+        }
     </script>
 </body>
 </html>`;
@@ -963,6 +1132,39 @@ async function handleScrape(request: Request, env: Env): Promise<Response> {
         winNumber: item.winNumber,
         isJackpot: item.isjackpot
       }));
+      
+      // ดึงข้อมูลจาก Sanook สำหรับวันที่ที่ scrape
+      if (targetDate) {
+        console.log(`กำลังดึงข้อมูลจาก Sanook สำหรับวันที่ ${targetDate}...`);
+        const sanookScraper = new SanookScraper();
+        const { results: sanookResults } = await sanookScraper.scrapeResults();
+        const sanookResult = sanookResults.find((r: SanookLotteryResult) => r.date === targetDate);
+        
+        if (sanookResult) {
+          await db.updateSanookData(
+            targetDate,
+            sanookResult.animalName || null,
+            sanookResult.phathanaNumbers.length > 0 ? sanookResult.phathanaNumbers : null,
+            'phathana'
+          );
+          console.log(`อัพเดทข้อมูล Sanook สำหรับวันที่ ${targetDate} สำเร็จ`);
+        }
+      } else {
+        // ถ้าไม่ระบุ date ให้ดึง 5 งวดล่าสุด
+        console.log('กำลังดึงข้อมูลจาก Sanook (5 งวดล่าสุด)...');
+        const sanookScraper = new SanookScraper();
+        const { results: sanookResults } = await sanookScraper.getLatestResults(5);
+        
+        for (const sanookResult of sanookResults) {
+          await db.updateSanookData(
+            sanookResult.date,
+            sanookResult.animalName || null,
+            sanookResult.phathanaNumbers.length > 0 ? sanookResult.phathanaNumbers : null,
+            'phathana'
+          );
+        }
+        console.log(`อัพเดทข้อมูล Sanook สำเร็จ ${sanookResults.length} งวด`);
+      }
     }
     
     return new Response(JSON.stringify({
@@ -988,6 +1190,55 @@ async function handleScrape(request: Request, env: Env): Promise<Response> {
       status: 500,
       headers: {
         'Content-Type': 'application/json; charset=utf-8'
+      }
+    });
+  }
+}
+
+/**
+ * จัดการ POST /api/test-sanook - ทดสอบ Sanook scraper
+ */
+async function handleTestSanook(env: Env): Promise<Response> {
+  try {
+    console.log('กำลังทดสอบดึงข้อมูลจาก Sanook...');
+    const sanookScraper = new SanookScraper();
+    // ดึงข้อมูลทั้งหมด ไม่ limit และไม่บันทึก
+    const { results, debugLogs } = await sanookScraper.scrapeResults();
+    
+    console.log(`ดึงข้อมูลจาก Sanook สำเร็จ: ${results.length} งวด`);
+    
+    return new Response(JSON.stringify({
+      success: true,
+      message: 'ดึงข้อมูลจาก Sanook สำเร็จ',
+      count: results.length,
+      debugLogs: debugLogs, // ส่ง debug logs กลับไปที่ client
+      results: results.map(item => ({
+        date: item.date,
+        animalName: item.animalName || null,
+        phathanaNumbers: item.phathanaNumbers,
+        phathanaNumbersRaw: item.phathanaNumbersRaw
+      }))
+    }, null, 2), {
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Access-Control-Allow-Origin': '*'
+      }
+    });
+  } catch (error) {
+    console.error('Error in handleTestSanook:', error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorStack = error instanceof Error ? error.stack : undefined;
+    
+    return new Response(JSON.stringify({
+      success: false,
+      error: errorMessage,
+      stack: errorStack,
+      debugLogs: [`❌ Error: ${errorMessage}`]
+    }, null, 2), {
+      status: 500,
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Access-Control-Allow-Origin': '*'
       }
     });
   }

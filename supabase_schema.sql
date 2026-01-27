@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS lottery_results (
     is_close_sale BOOLEAN DEFAULT FALSE,
     round_status INTEGER,
     is_jackpot BOOLEAN DEFAULT FALSE,
+    animal_name TEXT, -- ชื่อนามสัตว์ (จาก Sanook)
+    phathana_numbers TEXT[], -- หวยลาวพัฒนา 5 ชุด (array ของ 2 หลัก)
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
