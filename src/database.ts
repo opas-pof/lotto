@@ -168,35 +168,57 @@ export class DatabaseManager {
   /**
    * อัพเดทข้อมูลจาก Sanook (animal_name และ phathana_numbers)
    * ใช้ round_date และ lottery_type เป็น key
+   * 
+   * ปัญหา: round_date ใน DB เป็น UTC แต่วันที่จาก Sanook เป็นเวลาไทย
+   * วิธีแก้: แปลง round_date เป็นเวลาไทยแล้วเปรียบเทียบกับวันที่จาก Sanook
    */
   async updateSanookData(
-    date: string, // YYYY-MM-DD
+    date: string, // YYYY-MM-DD (เวลาไทย)
     animalName: string | null,
     phathanaNumbers: string[] | null,
     lotteryType: string = 'phathana'
   ): Promise<number> {
     try {
-      // แปลงวันที่เป็นช่วงเวลา (เริ่มต้นวัน - สิ้นสุดวัน)
-      const startDate = new Date(date + 'T00:00:00Z').toISOString();
-      const endDate = new Date(date + 'T23:59:59Z').toISOString();
-      
-      // หาข้อมูลที่มี round_date อยู่ในช่วงวันที่นี้
-      const { data: existingData, error: findError } = await this.supabase
+      // ดึงข้อมูลทั้งหมดของ lottery_type นี้มา
+      // แล้วแปลง round_date เป็นเวลาไทยเพื่อเปรียบเทียบ
+      const { data: allData, error: findError } = await this.supabase
         .from('lottery_results')
-        .select('id, source_id')
+        .select('id, source_id, round_date, round_id')
         .eq('lottery_type', lotteryType)
-        .gte('round_date', startDate)
-        .lte('round_date', endDate)
-        .order('round_date', { ascending: false })
-        .limit(1);
+        .order('round_date', { ascending: false });
       
       if (findError) {
         console.error('Error finding existing data:', findError);
         return 0;
       }
       
-      if (!existingData || existingData.length === 0) {
-        console.warn(`ไม่พบข้อมูลสำหรับวันที่ ${date}`);
+      if (!allData || allData.length === 0) {
+        console.warn(`ไม่พบข้อมูลสำหรับ lottery_type: ${lotteryType}`);
+        return 0;
+      }
+      
+      // หา row ที่มี round_date เมื่อแปลงเป็นเวลาไทยแล้วตรงกับ date จาก Sanook
+      let matchedRow = null;
+      for (const row of allData) {
+        // แปลง round_date (UTC) เป็นเวลาไทย (UTC+7)
+        const utcDate = new Date(row.round_date);
+        const thaiDate = new Date(utcDate.getTime() + (7 * 60 * 60 * 1000));
+        const thaiDateStr = thaiDate.toISOString().split('T')[0]; // YYYY-MM-DD
+        
+        if (thaiDateStr === date) {
+          matchedRow = row;
+          break;
+        }
+      }
+      
+      if (!matchedRow) {
+        console.warn(`ไม่พบข้อมูลสำหรับวันที่ ${date} (เวลาไทย) ใน lottery_type: ${lotteryType}`);
+        console.log(`วันที่ที่ค้นหา: ${date}`);
+        console.log(`วันที่ที่มีใน DB (เวลาไทย):`, allData.slice(0, 5).map(r => {
+          const utcDate = new Date(r.round_date);
+          const thaiDate = new Date(utcDate.getTime() + (7 * 60 * 60 * 1000));
+          return thaiDate.toISOString().split('T')[0];
+        }));
         return 0;
       }
       
@@ -208,14 +230,14 @@ export class DatabaseManager {
           phathana_numbers: phathanaNumbers,
           updated_at: new Date().toISOString()
         })
-        .eq('id', existingData[0].id);
+        .eq('id', matchedRow.id);
       
       if (updateError) {
         console.error('Error updating Sanook data:', updateError);
         return 0;
       }
       
-      console.log(`อัพเดทข้อมูล Sanook สำหรับวันที่ ${date} สำเร็จ`);
+      console.log(`อัพเดทข้อมูล Sanook สำหรับวันที่ ${date} (round_id: ${matchedRow.round_id}) สำเร็จ`);
       return 1;
     } catch (error) {
       console.error('Error updating Sanook data:', error);

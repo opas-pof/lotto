@@ -58,6 +58,30 @@ export default {
       }
     }
     
+    // API endpoint สำหรับดึงข้อมูลทั้งหมด (ไม่บันทึก)
+    if (url.pathname === '/api/fetch-all' || url.pathname === '/api/fetch-all/') {
+      if (request.method === 'POST') {
+        return handleFetchAll(request, env);
+      } else {
+        return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+          status: 405,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+    }
+    
+    // API endpoint สำหรับบันทึกข้อมูลที่ดึงมาแล้ว
+    if (url.pathname === '/api/save-fetched' || url.pathname === '/api/save-fetched/') {
+      if (request.method === 'POST') {
+        return handleSaveFetched(request, env);
+      } else {
+        return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+          status: 405,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+    }
+    
     // Health check
     if (url.pathname === '/health' || url.pathname === '/') {
       return new Response(JSON.stringify({ 
@@ -75,56 +99,62 @@ export default {
   /**
    * จัดการ Cron Triggers (scheduled tasks)
    * รันทุกวันจันทร์, พุธ, ศุกร์ เวลา 20:30 น. (UTC+7)
-   * ดึงข้อมูลหวยพัฒนาเฉพาะ 5 รายการล่าสุด
+   * ดึงข้อมูลทั้งหมดจากทั้ง 2 source (API + Sanook) และบันทึกลง DB
    */
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     console.log('Cron trigger fired at:', new Date().toISOString());
     
     const scraper = new LotteryScraper();
+    const sanookScraper = new SanookScraper();
     const db = new DatabaseManager(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
     
     try {
-      // ดึงข้อมูลผลหวยพัฒนา (เฉพาะ 5 รายการล่าสุด)
-      console.log('กำลังดึงข้อมูลผลหวย...');
+      // ดึงข้อมูลทั้งหมดจากทั้ง 2 source (เหมือน manual page)
+      console.log('กำลังดึงข้อมูลทั้งหมด...');
+      
+      // ดึงข้อมูลเลข 6 หลัก
+      console.log('กำลังดึงข้อมูลเลข 6 หลักจาก API...');
       const phathanaResults = await scraper.getPhathanaResults();
+      console.log(`พบข้อมูลเลข 6 หลัก ${phathanaResults.length} รายการ`);
       
-      const savedCounts: Record<string, number> = {};
+      // ดึงข้อมูลจาก Sanook
+      console.log('กำลังดึงข้อมูลจาก Sanook...');
+      const { results: sanookResults } = await sanookScraper.scrapeResults();
+      console.log(`พบข้อมูลจาก Sanook ${sanookResults.length} งวด`);
       
-      // บันทึกข้อมูลหวยพัฒนา (เฉพาะ 5 รายการล่าสุด)
+      // สร้าง map จาก Sanook results
+      const sanookMap = new Map<string, SanookLotteryResult>();
+      sanookResults.forEach(r => {
+        sanookMap.set(r.date, r);
+      });
+      
+      // รวมข้อมูลจากทั้ง 2 source และบันทึกลง DB
+      let savedPhathanaCount = 0;
+      let savedSanookCount = 0;
+      
+      // บันทึกข้อมูลเลข 6 หลัก
       if (phathanaResults && phathanaResults.length > 0) {
-        // เรียงตาม roundDate จากใหม่ไปเก่า และเอาแค่ 5 รายการล่าสุด
         const sortedResults = phathanaResults
-          .sort((a, b) => new Date(b.roundDate).getTime() - new Date(a.roundDate).getTime())
-          .slice(0, 5);
+          .sort((a, b) => new Date(b.roundDate).getTime() - new Date(a.roundDate).getTime());
         
-        console.log(`พบข้อมูลหวยพัฒนา ${phathanaResults.length} รายการ (เลือก 5 รายการล่าสุด)`);
-        savedCounts.phathana = await db.saveLotteryResults(sortedResults, 'phathana');
-        console.log(`บันทึกข้อมูลหวยพัฒนา ${savedCounts.phathana} รายการ`);
-      } else {
-        console.warn('ไม่พบข้อมูลหวยพัฒนา');
+        savedPhathanaCount = await db.saveLotteryResults(sortedResults, 'phathana');
+        console.log(`บันทึกข้อมูลเลข 6 หลัก ${savedPhathanaCount} รายการ`);
       }
       
-      // ดึงข้อมูลจาก Sanook (ชื่อนามสัตว์และหวยลาวพัฒนา)
-      console.log('กำลังดึงข้อมูลจาก Sanook...');
-      const sanookScraper = new SanookScraper();
-      const { results: sanookResults } = await sanookScraper.getLatestResults(5);
-      
+      // บันทึกข้อมูล Sanook (อัพเดทข้อมูลที่มีอยู่แล้ว)
       if (sanookResults && sanookResults.length > 0) {
-        console.log(`พบข้อมูลจาก Sanook ${sanookResults.length} งวด`);
-        
-        // อัพเดทข้อมูลแต่ละงวด
         for (const sanookResult of sanookResults) {
-          await db.updateSanookData(
+          const updateCount = await db.updateSanookData(
             sanookResult.date,
             sanookResult.animalName || null,
             sanookResult.phathanaNumbers.length > 0 ? sanookResult.phathanaNumbers : null,
             'phathana'
           );
+          if (updateCount > 0) {
+            savedSanookCount++;
+          }
         }
-        
-        console.log(`อัพเดทข้อมูล Sanook สำเร็จ ${sanookResults.length} งวด`);
-      } else {
-        console.warn('ไม่พบข้อมูลจาก Sanook');
+        console.log(`อัพเดทข้อมูล Sanook ${savedSanookCount}/${sanookResults.length} งวด`);
       }
       
       // แสดงข้อมูลล่าสุด (แปลงเป็นเวลาไทย)
@@ -138,10 +168,16 @@ export default {
           hour: '2-digit',
           minute: '2-digit'
         });
-        console.log(`หวยพัฒนาล่าสุด: ${dateStr} ${timeStr} น. - ${latestPhathana.win_number}`);
+        console.log(`หวยพัฒนาล่าสุด: ${dateStr} ${timeStr} น. - ${latestPhathana.win_number || '-'}`);
+        if (latestPhathana.animal_name) {
+          console.log(`  ชื่อนามสัตว์: ${latestPhathana.animal_name}`);
+        }
+        if (latestPhathana.phathana_numbers && latestPhathana.phathana_numbers.length > 0) {
+          console.log(`  หวยลาวพัฒนา: ${latestPhathana.phathana_numbers.join(' ')}`);
+        }
       }
       
-      console.log('เสร็จสิ้น!');
+      console.log(`เสร็จสิ้น! บันทึกเลข 6 หลัก: ${savedPhathanaCount} รายการ, อัพเดท Sanook: ${savedSanookCount} งวด`);
     } catch (error) {
       console.error('เกิดข้อผิดพลาด:', error);
       throw error;
@@ -445,7 +481,10 @@ async function handleManualPage(): Promise<Response> {
         <p class="subtitle">ใช้สำหรับ trigger scraping แบบ manual และทดสอบระบบ</p>
 
         <div class="date-selector">
-            <h3>📅 เลือกวันที่สำหรับ Scrape</h3>
+            <h3>📅 ดึงข้อมูลทั้งหมด (เลข 6 หลัก + นามสัตว์ + เลขชุด)</h3>
+            <p style="color: #666; font-size: 14px; margin-bottom: 15px;">
+                ดึงข้อมูลจากทั้ง 2 source: API (เลข 6 หลัก) และ Sanook (นามสัตว์ + เลขชุด)
+            </p>
             <div class="date-controls">
                 <button class="btn-load" id="btnLoadDates" onclick="loadAvailableDates()">
                     <span id="loadIcon">🔄</span>
@@ -453,12 +492,13 @@ async function handleManualPage(): Promise<Response> {
                 </button>
                 <select id="dateSelect" disabled>
                     <option value="">-- เลือกวันที่ --</option>
+                    <option value="__all__">📋 ดึงย้อนหลังทั้งหมด</option>
                 </select>
             </div>
             <div class="date-controls" style="margin-top: 15px;">
-                <button class="btn-scrape" id="btnScrapePhathana" onclick="triggerScrape('phathana')" disabled style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
-                    <span id="scrapePhathanaIcon">🚀</span>
-                    <span id="scrapePhathanaText">Scrape หวยพัฒนา</span>
+                <button class="btn-scrape" id="btnFetchAll" onclick="fetchAllData()" disabled style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+                    <span id="fetchAllIcon">🚀</span>
+                    <span id="fetchAllText">ดึงข้อมูลทั้งหมด</span>
                 </button>
             </div>
         </div>
@@ -488,6 +528,16 @@ async function handleManualPage(): Promise<Response> {
         <div id="result" class="result"></div>
         
         <div id="sanookResult" class="result" style="display: none;"></div>
+        
+        <div id="fetchAllResult" class="result" style="display: none;">
+            <div id="fetchAllDataContainer"></div>
+            <div style="margin-top: 20px; text-align: center;">
+                <button class="btn-scrape" id="btnSaveFetched" onclick="saveFetchedData()" disabled style="background: linear-gradient(135deg, #28a745 0%, #20c997 100%); min-width: 200px;">
+                    <span id="saveFetchedIcon">💾</span>
+                    <span id="saveFetchedText">บันทึกลงฐานข้อมูล</span>
+                </button>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -519,7 +569,7 @@ async function handleManualPage(): Promise<Response> {
                     status.textContent = \`✅ พบ \${data.dates.length} วันที่\`;
                     
                     // เติมข้อมูลลง dropdown
-                    dateSelect.innerHTML = '<option value="">-- เลือกวันที่ --</option>';
+                    dateSelect.innerHTML = '<option value="">-- เลือกวันที่ --</option><option value="__all__">📋 ดึงย้อนหลังทั้งหมด</option>';
                     data.dates.forEach(date => {
                         const option = document.createElement('option');
                         option.value = date;
@@ -534,14 +584,14 @@ async function handleManualPage(): Promise<Response> {
                             month: 'long', 
                             day: 'numeric'
                         });
-                        option.textContent = \`\${dayName} \${dateStr} (\${date})\`;
+                        option.textContent = dayName + ' ' + dateStr + ' (' + date + ')';
                         dateSelect.appendChild(option);
                     });
                     
                     dateSelect.disabled = false;
                     dateSelect.addEventListener('change', function() {
                         const hasValue = !!this.value;
-                        document.getElementById('btnScrapePhathana').disabled = !hasValue;
+                        document.getElementById('btnFetchAll').disabled = !hasValue;
                     });
                 } else {
                     throw new Error(data.error || 'ไม่พบวันที่');
@@ -854,13 +904,42 @@ async function handleManualPage(): Promise<Response> {
                 const data = await response.json();
 
                 if (response.ok && data.success) {
+                    const savedCount = data.savedCount || 0;
+                    const totalCount = data.count || 0;
                     status.className = 'status success show';
-                    status.textContent = \`✅ ดึงข้อมูลจาก Sanook สำเร็จ! พบ \${data.count} งวด\`;
+                    status.textContent = \`✅ ดึงข้อมูลจาก Sanook สำเร็จ! พบ \${totalCount} งวด บันทึกลง DB แล้ว \${savedCount} งวด\`;
 
                     // แสดง Debug Logs
                     let resultHTML = \`
-                        <h3>ผลลัพธ์การ Scrape จาก Sanook <span class="count-badge">\${data.count} งวด</span></h3>
+                        <h3>ผลลัพธ์การ Scrape จาก Sanook <span class="count-badge">\${totalCount} งวด</span></h3>
                     \`;
+                    
+                    // แสดงผลการบันทึก
+                    if (data.saveResults && data.saveResults.length > 0) {
+                        const successCount = data.saveResults.filter(r => r.success).length;
+                        const failCount = data.saveResults.filter(r => !r.success).length;
+                        resultHTML += \`
+                            <div style="margin-top: 15px; padding: 15px; background: \${successCount > 0 ? '#d4edda' : '#fff3cd'}; border-radius: 8px; border-left: 4px solid \${successCount > 0 ? '#28a745' : '#ffc107'};">
+                                <h4 style="margin: 0 0 10px 0; color: \${successCount > 0 ? '#155724' : '#856404'};">
+                                    💾 ผลการบันทึกลงฐานข้อมูล: สำเร็จ \${successCount} งวด\${failCount > 0 ? ', ไม่สำเร็จ ' + failCount + ' งวด' : ''}
+                                </h4>
+                                <div style="font-size: 13px; color: \${successCount > 0 ? '#155724' : '#856404'}; max-height: 200px; overflow-y: auto;">
+                        \`;
+                        data.saveResults.forEach((saveResult, idx) => {
+                            const icon = saveResult.success ? '✅' : '❌';
+                            const bgColor = saveResult.success ? '#c3e6cb' : '#f8d7da';
+                            const textColor = saveResult.success ? '#155724' : '#721c24';
+                            resultHTML += \`
+                                <div style="margin-bottom: 5px; padding: 8px; background: \${bgColor}; border-radius: 4px; color: \${textColor};">
+                                    \${icon} <strong>\${saveResult.date}</strong>\${':'} \${saveResult.message}
+                                </div>
+                            \`;
+                        });
+                        resultHTML += \`
+                                </div>
+                            </div>
+                        \`;
+                    }
                     
                     // แสดง Debug Logs
                     if (data.debugLogs && data.debugLogs.length > 0) {
@@ -890,13 +969,20 @@ async function handleManualPage(): Promise<Response> {
                                 ? item.phathanaNumbers.join(' ')
                                 : '-';
                             
+                            // หาว่าบันทึกสำเร็จหรือไม่
+                            const saveResult = data.saveResults && data.saveResults[index];
+                            const saveStatus = saveResult ? (saveResult.success ? '✅ บันทึกสำเร็จ' : '❌ ไม่พบข้อมูลใน DB') : '';
+                            
                             resultHTML += \`
                                 <div class="result-item" style="margin-top: \${index > 0 ? '15px' : '0'}; padding: 15px; background: white; border-radius: 8px; border: 1px solid #e0e0e0;">
-                                    <strong style="font-size: 16px; color: #667eea;">งวดที่ \${index + 1}: \${item.date}</strong>
+                                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                                        <strong style="font-size: 16px; color: #667eea;">งวดที่ \${index + 1}\${':'} \${item.date}</strong>
+                                        \${saveStatus ? \`<span style="font-size: 12px; color: \${saveResult.success ? '#28a745' : '#dc3545'}; font-weight: bold;">\${saveStatus}</span>\` : ''}
+                                    </div>
                                     <div style="margin-top: 10px;">
-                                        <div><strong>ชื่อนามสัตว์:</strong> <span style="color: #333;">\${item.animalName || '-'}</span></div>
-                                        <div style="margin-top: 5px;"><strong>หวยลาวพัฒนา (5 ชุด):</strong> <span style="font-size: 18px; color: #667eea; font-weight: bold;">\${phathanaDisplay}</span></div>
-                                        <div style="margin-top: 5px; color: #666; font-size: 12px; font-family: monospace;">Raw (10 หลัก): \${item.phathanaNumbersRaw || '-'}</div>
+                                        <div><strong>ชื่อนามสัตว์\${':'}</strong> <span style="color: #333;">\${item.animalName || '-'}</span></div>
+                                        <div style="margin-top: 5px;"><strong>หวยลาวพัฒนา (5 ชุด)\${':'}</strong> <span style="font-size: 18px; color: #667eea; font-weight: bold;">\${phathanaDisplay}</span></div>
+                                        <div style="margin-top: 5px; color: #666; font-size: 12px; font-family: monospace;">Raw (10 หลัก)\${':'} \${item.phathanaNumbersRaw || '-'}</div>
                                     </div>
                                 </div>
                             \`;
@@ -917,8 +1003,8 @@ async function handleManualPage(): Promise<Response> {
                     }
                     
                     resultHTML += \`
-                        <p style="margin-top: 15px; color: #666; font-size: 14px; padding: 10px; background: #e7f3ff; border-radius: 8px;">
-                            💡 <strong>หมายเหตุ:</strong> ข้อมูลนี้เป็นการทดสอบเท่านั้น ยังไม่มีการบันทึกลงฐานข้อมูล
+                        <p style="margin-top: 15px; color: #28a745; font-size: 14px; padding: 10px; background: #d4edda; border-radius: 8px; border-left: 4px solid #28a745;">
+                            ✅ <strong>บันทึกลงฐานข้อมูลแล้ว:</strong> ข้อมูลที่ดึงได้จาก Sanook ถูกบันทึกลงฐานข้อมูลแล้ว \${savedCount > 0 ? ' (' + savedCount + ' งวด)' : ''}
                         </p>
                     \`;
                     
@@ -942,6 +1028,210 @@ async function handleManualPage(): Promise<Response> {
                 btn.disabled = false;
                 testSanookIcon.textContent = '🔍';
                 testSanookText.textContent = 'ทดสอบดึงข้อมูล Sanook';
+            }
+        }
+        
+        let fetchedData = null; // เก็บข้อมูลที่ดึงมา
+        
+        async function fetchAllData() {
+            const btn = document.getElementById('btnFetchAll');
+            const dateSelect = document.getElementById('dateSelect');
+            const status = document.getElementById('status');
+            const fetchAllResult = document.getElementById('fetchAllResult');
+            const fetchAllDataContainer = document.getElementById('fetchAllDataContainer');
+            const btnSaveFetched = document.getElementById('btnSaveFetched');
+            const fetchAllIcon = document.getElementById('fetchAllIcon');
+            const fetchAllText = document.getElementById('fetchAllText');
+            
+            const selectedDate = dateSelect.value;
+            const fetchAll = selectedDate === '__all__';
+            const date = fetchAll ? null : selectedDate;
+            
+            btn.disabled = true;
+            fetchAllIcon.innerHTML = '<div class="spinner"></div>';
+            fetchAllText.textContent = 'กำลังดึงข้อมูล...';
+            
+            status.className = 'status loading show';
+            status.textContent = fetchAll ? '⏳ กำลังดึงข้อมูลย้อนหลังทั้งหมด...' : \`⏳ กำลังดึงข้อมูลสำหรับวันที่ \${date}...\`;
+            fetchAllResult.style.display = 'none';
+            fetchAllResult.classList.remove('show');
+            btnSaveFetched.disabled = true;
+            
+            try {
+                const response = await fetch(\`\${API_BASE}/api/fetch-all\`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ date, fetchAll })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok && data.success) {
+                    fetchedData = data.data; // เก็บข้อมูลไว้
+                    
+                    status.className = 'status success show';
+                    status.textContent = \`✅ ดึงข้อมูลสำเร็จ! พบ \${data.count} งวด\`;
+                    
+                    // แสดงข้อมูล
+                    let resultHTML = \`
+                        <h3>ข้อมูลที่ดึงได้ <span class="count-badge">\${data.count} งวด</span></h3>
+                        <p style="color: #666; font-size: 14px; margin-bottom: 15px;">
+                            \${fetchAll ? '📋 ดึงย้อนหลังทั้งหมด' : '📅 วันที่' + ': ' + date}
+                        </p>
+                    \`;
+                    
+                    if (data.data && data.data.length > 0) {
+                        resultHTML += \`
+                            <div style="margin-top: 20px; max-height: 500px; overflow-y: auto;">
+                        \`;
+                        
+                        data.data.forEach((item, index) => {
+                            const phathanaDisplay = item.phathanaNumbers && item.phathanaNumbers.length > 0
+                                ? item.phathanaNumbers.join(' ')
+                                : '-';
+                            
+                            resultHTML += \`
+                                <div class="result-item" style="margin-top: \${index > 0 ? '15px' : '0'}; padding: 15px; background: white; border-radius: 8px; border: 1px solid #e0e0e0;">
+                                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                                        <strong style="font-size: 16px; color: #667eea;">งวดที่ \${index + 1}\${':'} \${item.date}</strong>
+                                        \${item.isJackpot ? '<span style="background' + ': #ffc107; color' + ': #856404; padding' + ': 4px 8px; border-radius' + ': 4px; font-size' + ': 12px; font-weight' + ': bold;">🎯 Jackpot</span>' : ''}
+                                    </div>
+                                    <div style="margin-top: 10px;">
+                                        \${item.winNumber ? \`
+                                            <div style="margin-bottom: 8px;">
+                                                <strong>เลข 6 หลัก\${':'}</strong> 
+                                                <span style="font-size: 20px; color: #667eea; font-weight: bold; margin-left: 10px;">\${item.winNumber}</span>
+                                            </div>
+                                        \` : '<div style="color' + ': #999; font-style' + ': italic;">⚠️ ไม่พบเลข 6 หลัก</div>'}
+                                        <div style="margin-top: 8px;">
+                                            <strong>ชื่อนามสัตว์\${':'}</strong> 
+                                            <span style="color: #333; margin-left: 10px;">\${item.animalName || '-'}</span>
+                                        </div>
+                                        <div style="margin-top: 8px;">
+                                            <strong>หวยลาวพัฒนา (5 ชุด)\${':'}</strong> 
+                                            <span style="font-size: 18px; color: #667eea; font-weight: bold; margin-left: 10px;">\${phathanaDisplay}</span>
+                                        </div>
+                                        \${item.phathanaNumbersRaw ? \`
+                                            <div style="margin-top: 5px; color: #666; font-size: 12px; font-family: monospace;">
+                                                Raw (10 หลัก)\${':'} \${item.phathanaNumbersRaw}
+                                            </div>
+                                        \` : ''}
+                                    </div>
+                                </div>
+                            \`;
+                        });
+                        
+                        resultHTML += \`
+                            </div>
+                        \`;
+                    } else {
+                        resultHTML += \`
+                            <div style="margin-top: 20px; padding: 15px; background: #fff3cd; border-radius: 8px; border-left: 4px solid #ffc107;">
+                                <h4 style="margin: 0 0 10px 0; color: #856404;">📭 ไม่พบข้อมูล</h4>
+                                <p style="color: #856404; margin: 0;">
+                                    ไม่พบข้อมูล - ตรวจสอบว่ามีข้อมูลในระบบหรือไม่
+                                </p>
+                            </div>
+                        \`;
+                    }
+                    
+                    fetchAllDataContainer.innerHTML = resultHTML;
+                    fetchAllResult.style.display = 'block';
+                    fetchAllResult.classList.add('show');
+                    btnSaveFetched.disabled = false;
+                } else {
+                    throw new Error(data.error || 'เกิดข้อผิดพลาด');
+                }
+            } catch (error) {
+                status.className = 'status error show';
+                status.textContent = \`❌ เกิดข้อผิดพลาด: \${error.message}\`;
+                
+                fetchAllResult.style.display = 'block';
+                fetchAllResult.classList.add('show');
+                fetchAllDataContainer.innerHTML = \`
+                    <h3>❌ เกิดข้อผิดพลาด</h3>
+                    <p style="color: #721c24;">\${error.message}</p>
+                \`;
+            } finally {
+                btn.disabled = false;
+                fetchAllIcon.textContent = '🚀';
+                fetchAllText.textContent = 'ดึงข้อมูลทั้งหมด';
+            }
+        }
+        
+        async function saveFetchedData() {
+            if (!fetchedData || fetchedData.length === 0) {
+                alert('ไม่มีข้อมูลที่จะบันทึก');
+                return;
+            }
+            
+            const btn = document.getElementById('btnSaveFetched');
+            const status = document.getElementById('status');
+            const saveFetchedIcon = document.getElementById('saveFetchedIcon');
+            const saveFetchedText = document.getElementById('saveFetchedText');
+            
+            btn.disabled = true;
+            saveFetchedIcon.innerHTML = '<div class="spinner"></div>';
+            saveFetchedText.textContent = 'กำลังบันทึก...';
+            
+            status.className = 'status loading show';
+            status.textContent = \`⏳ กำลังบันทึกข้อมูล \${fetchedData.length} งวดลงฐานข้อมูล...\`;
+            
+            try {
+                const response = await fetch(\`\${API_BASE}/api/save-fetched\`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ data: fetchedData })
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok && result.success) {
+                    status.className = 'status success show';
+                    status.textContent = \`✅ บันทึกข้อมูลสำเร็จ! \${result.savedCount}/\${result.totalCount} งวด\`;
+                    
+                    // แสดงผลการบันทึก
+                    const fetchAllDataContainer = document.getElementById('fetchAllDataContainer');
+                    let saveResultsHTML = \`
+                        <div style="margin-top: 20px; padding: 15px; background: #d4edda; border-radius: 8px; border-left: 4px solid #28a745;">
+                            <h4 style="margin: 0 0 10px 0; color: #155724;">💾 ผลการบันทึก</h4>
+                            <div style="font-size: 13px; color: #155724;">
+                    \`;
+                    
+                    if (result.saveResults && result.saveResults.length > 0) {
+                        result.saveResults.forEach((saveResult) => {
+                            const icon = saveResult.success ? '✅' : '❌';
+                            const bgColor = saveResult.success ? '#c3e6cb' : '#f8d7da';
+                            const textColor = saveResult.success ? '#155724' : '#721c24';
+                            saveResultsHTML += \`
+                                <div style="margin-bottom: 5px; padding: 8px; background: \${bgColor}; border-radius: 4px; color: \${textColor};">
+                                    \${icon} <strong>\${saveResult.date}</strong>\${':'} \${saveResult.message}
+                                </div>
+                            \`;
+                        });
+                    }
+                    
+                    saveResultsHTML += \`
+                            </div>
+                        </div>
+                    \`;
+                    
+                    fetchAllDataContainer.innerHTML += saveResultsHTML;
+                    btn.disabled = true; // ปิดการใช้งานปุ่มบันทึกหลังจากบันทึกแล้ว
+                } else {
+                    throw new Error(result.error || 'เกิดข้อผิดพลาดในการบันทึก');
+                }
+            } catch (error) {
+                status.className = 'status error show';
+                status.textContent = \`❌ เกิดข้อผิดพลาดในการบันทึก: \${error.message}\`;
+            } finally {
+                btn.disabled = false;
+                saveFetchedIcon.textContent = '💾';
+                saveFetchedText.textContent = 'บันทึกลงฐานข้อมูล';
             }
         }
     </script>
@@ -1103,10 +1393,9 @@ async function handleScrape(request: Request, env: Env): Promise<Response> {
           return itemDate === targetDate;
         });
       } else {
-        // ถ้าไม่ระบุ date = เอาแค่ 5 รายการล่าสุด
+        // ถ้าไม่ระบุ date = ดึงทั้งหมด
         phathanaResults = phathanaResults
-          .sort((a, b) => new Date(b.roundDate).getTime() - new Date(a.roundDate).getTime())
-          .slice(0, 5);
+          .sort((a, b) => new Date(b.roundDate).getTime() - new Date(a.roundDate).getTime());
       }
     }
     
@@ -1150,10 +1439,10 @@ async function handleScrape(request: Request, env: Env): Promise<Response> {
           console.log(`อัพเดทข้อมูล Sanook สำหรับวันที่ ${targetDate} สำเร็จ`);
         }
       } else {
-        // ถ้าไม่ระบุ date ให้ดึง 5 งวดล่าสุด
-        console.log('กำลังดึงข้อมูลจาก Sanook (5 งวดล่าสุด)...');
+        // ถ้าไม่ระบุ date ให้ดึงทั้งหมด
+        console.log('กำลังดึงข้อมูลจาก Sanook (ทั้งหมด)...');
         const sanookScraper = new SanookScraper();
-        const { results: sanookResults } = await sanookScraper.getLatestResults(5);
+        const { results: sanookResults } = await sanookScraper.scrapeResults();
         
         for (const sanookResult of sanookResults) {
           await db.updateSanookData(
@@ -1196,21 +1485,354 @@ async function handleScrape(request: Request, env: Env): Promise<Response> {
 }
 
 /**
- * จัดการ POST /api/test-sanook - ทดสอบ Sanook scraper
+ * จัดการ POST /api/fetch-all - ดึงข้อมูลทั้งหมด (เลข 6 หลัก + Sanook) แต่ไม่บันทึก
+ */
+async function handleFetchAll(request: Request, env: Env): Promise<Response> {
+  try {
+    const body = await request.json().catch(() => ({}));
+    const { date, fetchAll } = body as { date?: string; fetchAll?: boolean };
+    
+    console.log(`กำลังดึงข้อมูลทั้งหมด... date: ${date}, fetchAll: ${fetchAll}`);
+    
+    const scraper = new LotteryScraper();
+    const sanookScraper = new SanookScraper();
+    
+    // ดึงข้อมูลเลข 6 หลัก
+    let phathanaResults: any[] = [];
+    if (fetchAll) {
+      // ดึงย้อนหลังทั้งหมด
+      phathanaResults = await scraper.getPhathanaResults();
+    } else if (date) {
+      // ดึงเฉพาะวันที่
+      const allResults = await scraper.getPhathanaResults();
+      phathanaResults = allResults.filter(item => {
+        const itemDate = toThaiDate(item.roundDate);
+        return itemDate === date;
+      });
+    } else {
+      // ดึงทั้งหมด
+      const allResults = await scraper.getPhathanaResults();
+      phathanaResults = allResults
+        .sort((a, b) => new Date(b.roundDate).getTime() - new Date(a.roundDate).getTime());
+    }
+    
+    // ดึงข้อมูลจาก Sanook
+    let sanookResults: SanookLotteryResult[] = [];
+    if (fetchAll) {
+      // ดึงย้อนหลังทั้งหมด
+      const { results } = await sanookScraper.scrapeResults();
+      sanookResults = results;
+    } else if (date) {
+      // ดึงเฉพาะวันที่
+      const { results } = await sanookScraper.scrapeResults();
+      const found = results.find(r => r.date === date);
+      if (found) sanookResults = [found];
+    } else {
+      // ดึงทั้งหมดจาก Sanook
+      const { results: allSanookResults } = await sanookScraper.scrapeResults();
+      sanookResults = allSanookResults;
+    }
+    
+    // รวมข้อมูล
+    const combinedData: Array<{
+      date: string;
+      winNumber?: string;
+      roundNumber?: string;
+      roundDate?: string;
+      isJackpot?: boolean;
+      animalName?: string;
+      phathanaNumbers?: string[];
+      phathanaNumbersRaw?: string;
+    }> = [];
+    
+    // สร้าง map จาก Sanook results
+    const sanookMap = new Map<string, SanookLotteryResult>();
+    sanookResults.forEach(r => {
+      sanookMap.set(r.date, r);
+    });
+    
+    // รวมข้อมูลจากทั้ง 2 source
+    phathanaResults.forEach(item => {
+      const itemDate = toThaiDate(item.roundDate);
+      const sanookData = sanookMap.get(itemDate);
+      
+      combinedData.push({
+        date: itemDate,
+        winNumber: item.winNumber,
+        roundNumber: item.roundNumber,
+        roundDate: item.roundDate,
+        isJackpot: item.isjackpot,
+        animalName: sanookData?.animalName,
+        phathanaNumbers: sanookData?.phathanaNumbers,
+        phathanaNumbersRaw: sanookData?.phathanaNumbersRaw
+      });
+    });
+    
+    // เพิ่มข้อมูลจาก Sanook ที่ไม่มีใน phathanaResults
+    sanookResults.forEach(sanookItem => {
+      const exists = combinedData.find(d => d.date === sanookItem.date);
+      if (!exists) {
+        combinedData.push({
+          date: sanookItem.date,
+          animalName: sanookItem.animalName,
+          phathanaNumbers: sanookItem.phathanaNumbers,
+          phathanaNumbersRaw: sanookItem.phathanaNumbersRaw
+        });
+      }
+    });
+    
+    // เรียงตามวันที่จากใหม่ไปเก่า
+    combinedData.sort((a, b) => b.date.localeCompare(a.date));
+    
+    return new Response(JSON.stringify({
+      success: true,
+      message: `ดึงข้อมูลสำเร็จ: ${combinedData.length} งวด`,
+      count: combinedData.length,
+      data: combinedData,
+      fetchAll: fetchAll || false,
+      date: date || null
+    }, null, 2), {
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Access-Control-Allow-Origin': '*'
+      }
+    });
+  } catch (error) {
+    console.error('Error in handleFetchAll:', error);
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : String(error)
+    }, null, 2), {
+      status: 500,
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Access-Control-Allow-Origin': '*'
+      }
+    });
+  }
+}
+
+/**
+ * จัดการ POST /api/save-fetched - บันทึกข้อมูลที่ดึงมาแล้วลง DB
+ */
+async function handleSaveFetched(request: Request, env: Env): Promise<Response> {
+  try {
+    const body = await request.json().catch(() => ({}));
+    const { data } = body as { data: Array<{
+      date: string;
+      winNumber?: string;
+      roundNumber?: string;
+      roundDate?: string;
+      isJackpot?: boolean;
+      animalName?: string;
+      phathanaNumbers?: string[];
+    }> };
+    
+    if (!data || !Array.isArray(data)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Invalid data format'
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json; charset=utf-8' }
+      });
+    }
+    
+    const db = new DatabaseManager(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+    const scraper = new LotteryScraper();
+    let savedCount = 0;
+    const saveResults: Array<{ date: string; success: boolean; message: string }> = [];
+    
+    // ดึงข้อมูลจาก API อีกครั้งเพื่อให้ได้ข้อมูลที่ครบถ้วน (source_id, round_id, etc.)
+    const allPhathanaResults = await scraper.getPhathanaResults();
+    
+    // สร้าง map จาก API results โดยใช้วันที่เป็น key
+    const phathanaMap = new Map<string, any>();
+    allPhathanaResults.forEach(item => {
+      const itemDate = toThaiDate(item.roundDate);
+      phathanaMap.set(itemDate, item);
+    });
+    
+    // บันทึกข้อมูลแต่ละงวด
+    for (const item of data) {
+      let phathanaSaved = false;
+      let sanookSaved = false;
+      
+      // บันทึกเลข 6 หลัก (ถ้ามี)
+      if (item.winNumber && item.roundDate) {
+        const apiItem = phathanaMap.get(item.date);
+        if (apiItem) {
+          // ใช้ข้อมูลจาก API ที่มี source_id และ round_id ครบถ้วน
+          try {
+            const saved = await db.saveLotteryResults([{
+              id: apiItem.id,
+              roundId: apiItem.roundId,
+              roundDate: apiItem.roundDate,
+              roundNumber: apiItem.roundNumber,
+              winNumber: apiItem.winNumber,
+              lotNumber: apiItem.lotNumber,
+              yearId: apiItem.yearId,
+              isCloseSale: apiItem.isCloseSale,
+              roundStatus: apiItem.roundStatus,
+              isjackpot: apiItem.isjackpot || item.isJackpot || false
+            }], 'phathana');
+            
+            if (saved > 0) {
+              phathanaSaved = true;
+              savedCount++;
+            }
+          } catch (error) {
+            console.error(`Error saving phathana data for ${item.date}:`, error);
+          }
+        } else {
+          // ถ้าไม่พบใน API แต่มีข้อมูล winNumber ให้พยายามบันทึกด้วยข้อมูลที่มี
+          try {
+            const sourceId = new Date(item.roundDate).getTime();
+            const saved = await db.saveLotteryResults([{
+              id: sourceId,
+              roundDate: item.roundDate,
+              roundNumber: item.roundNumber,
+              winNumber: item.winNumber,
+              isjackpot: item.isJackpot || false
+            }], 'phathana');
+            
+            if (saved > 0) {
+              phathanaSaved = true;
+              savedCount++;
+            }
+          } catch (error) {
+            console.error(`Error saving phathana data (fallback) for ${item.date}:`, error);
+          }
+        }
+      }
+      
+      // บันทึกข้อมูล Sanook (ถ้ามี)
+      if (item.animalName || (item.phathanaNumbers && item.phathanaNumbers.length > 0)) {
+        try {
+          const updateCount = await db.updateSanookData(
+            item.date,
+            item.animalName || null,
+            item.phathanaNumbers && item.phathanaNumbers.length > 0 ? item.phathanaNumbers : null,
+            'phathana'
+          );
+          
+          if (updateCount > 0) {
+            sanookSaved = true;
+            if (!phathanaSaved) savedCount++; // นับเฉพาะถ้ายังไม่ได้นับจาก phathana
+          }
+        } catch (error) {
+          console.error(`Error saving Sanook data for ${item.date}:`, error);
+        }
+      }
+      
+      // สร้างข้อความผลลัพธ์
+      const messages: string[] = [];
+      if (phathanaSaved) messages.push('บันทึกเลข 6 หลักสำเร็จ');
+      if (sanookSaved) messages.push('บันทึกข้อมูล Sanook สำเร็จ');
+      
+      if (phathanaSaved || sanookSaved) {
+        saveResults.push({
+          date: item.date,
+          success: true,
+          message: messages.join(', ')
+        });
+      } else {
+        saveResults.push({
+          date: item.date,
+          success: false,
+          message: 'ไม่พบข้อมูลงวดที่ตรงกันใน DB หรือไม่มีข้อมูลที่จะบันทึก'
+        });
+      }
+    }
+    
+    return new Response(JSON.stringify({
+      success: true,
+      message: `บันทึกข้อมูลสำเร็จ: ${savedCount} งวด`,
+      savedCount: savedCount,
+      totalCount: data.length,
+      saveResults: saveResults
+    }, null, 2), {
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Access-Control-Allow-Origin': '*'
+      }
+    });
+  } catch (error) {
+    console.error('Error in handleSaveFetched:', error);
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : String(error)
+    }), {
+      status: 500,
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Access-Control-Allow-Origin': '*'
+      }
+    });
+  }
+}
+
+/**
+ * จัดการ POST /api/test-sanook - ทดสอบ Sanook scraper และบันทึกลง DB
  */
 async function handleTestSanook(env: Env): Promise<Response> {
   try {
     console.log('กำลังทดสอบดึงข้อมูลจาก Sanook...');
     const sanookScraper = new SanookScraper();
-    // ดึงข้อมูลทั้งหมด ไม่ limit และไม่บันทึก
+    // ดึงข้อมูลทั้งหมด
     const { results, debugLogs } = await sanookScraper.scrapeResults();
     
     console.log(`ดึงข้อมูลจาก Sanook สำเร็จ: ${results.length} งวด`);
     
+    // บันทึกลง DB
+    const db = new DatabaseManager(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+    let savedCount = 0;
+    const saveResults: Array<{ date: string; success: boolean; message: string }> = [];
+    
+    for (const result of results) {
+      try {
+        const updateCount = await db.updateSanookData(
+          result.date,
+          result.animalName || null,
+          result.phathanaNumbers.length > 0 ? result.phathanaNumbers : null,
+          'phathana'
+        );
+        
+        if (updateCount > 0) {
+          savedCount++;
+          saveResults.push({
+            date: result.date,
+            success: true,
+            message: 'บันทึกสำเร็จ'
+          });
+          console.log(`บันทึกข้อมูล Sanook สำหรับวันที่ ${result.date} สำเร็จ`);
+        } else {
+          saveResults.push({
+            date: result.date,
+            success: false,
+            message: 'ไม่พบข้อมูลงวดที่ตรงกันใน DB'
+          });
+          console.warn(`ไม่พบข้อมูลสำหรับวันที่ ${result.date} ใน DB`);
+        }
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        saveResults.push({
+          date: result.date,
+          success: false,
+          message: `เกิดข้อผิดพลาด: ${errorMsg}`
+        });
+        console.error(`เกิดข้อผิดพลาดในการบันทึกข้อมูลสำหรับวันที่ ${result.date}:`, error);
+      }
+    }
+    
+    console.log(`บันทึกข้อมูลลง DB สำเร็จ: ${savedCount}/${results.length} งวด`);
+    
     return new Response(JSON.stringify({
       success: true,
-      message: 'ดึงข้อมูลจาก Sanook สำเร็จ',
+      message: `ดึงข้อมูลจาก Sanook สำเร็จ และบันทึกลง DB แล้ว ${savedCount}/${results.length} งวด`,
       count: results.length,
+      savedCount: savedCount,
+      saveResults: saveResults,
       debugLogs: debugLogs, // ส่ง debug logs กลับไปที่ client
       results: results.map(item => ({
         date: item.date,
