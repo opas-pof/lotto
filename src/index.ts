@@ -122,27 +122,40 @@ export default {
       const { results: sanookResults } = await sanookScraper.scrapeResults();
       console.log(`พบข้อมูลจาก Sanook ${sanookResults.length} งวด`);
       
-      // สร้าง map จาก Sanook results
+      // สร้าง map จาก Sanook results (ใช้ date เป็น key)
       const sanookMap = new Map<string, SanookLotteryResult>();
       sanookResults.forEach(r => {
         sanookMap.set(r.date, r);
       });
       
-      // รวมข้อมูลจากทั้ง 2 source และบันทึกลง DB
       let savedPhathanaCount = 0;
       let savedSanookCount = 0;
       
-      // บันทึกข้อมูลเลข 6 หลัก
+      // รวมข้อมูล Sanook เข้าไปใน phathana ก่อน save ครั้งเดียว (ป้องกันการเขียนทับ animal_name, phathana_numbers เป็น null)
       if (phathanaResults && phathanaResults.length > 0) {
         const sortedResults = phathanaResults
           .sort((a, b) => new Date(b.roundDate).getTime() - new Date(a.roundDate).getTime());
         
-        savedPhathanaCount = await db.saveLotteryResults(sortedResults, 'phathana');
-        console.log(`บันทึกข้อมูลเลข 6 หลัก ${savedPhathanaCount} รายการ`);
+        const mergedResults = sortedResults.map(item => {
+          const itemDate = toThaiDate(item.roundDate);
+          const sanookData = sanookMap.get(itemDate);
+          return {
+            ...item,
+            animalName: sanookData?.animalName ?? (item as any).animalName,
+            phathanaNumbers: (sanookData?.phathanaNumbers && sanookData.phathanaNumbers.length > 0)
+              ? sanookData.phathanaNumbers
+              : (item as any).phathanaNumbers
+          };
+        });
+        
+        savedPhathanaCount = await db.saveLotteryResults(mergedResults, 'phathana');
+        savedSanookCount = mergedResults.filter(r => r.animalName || (r.phathanaNumbers && r.phathanaNumbers.length > 0)).length;
+        console.log(`บันทึกข้อมูลเลข 6 หลัก + Sanook ${savedPhathanaCount} รายการ (มีข้อมูล Sanook ${savedSanookCount} งวด)`);
       }
       
-      // บันทึกข้อมูล Sanook (อัพเดทข้อมูลที่มีอยู่แล้ว)
+      // อัพเดทเฉพาะงวดที่อยู่ใน Sanook แต่ไม่มีใน API (เช่น แถวที่เคยบันทึก manual)
       if (sanookResults && sanookResults.length > 0) {
+        let updatedExtra = 0;
         for (const sanookResult of sanookResults) {
           const updateCount = await db.updateSanookData(
             sanookResult.date,
@@ -150,11 +163,11 @@ export default {
             sanookResult.phathanaNumbers.length > 0 ? sanookResult.phathanaNumbers : null,
             'phathana'
           );
-          if (updateCount > 0) {
-            savedSanookCount++;
-          }
+          if (updateCount > 0) updatedExtra++;
         }
-        console.log(`อัพเดทข้อมูล Sanook ${savedSanookCount}/${sanookResults.length} งวด`);
+        if (updatedExtra > 0) {
+          console.log(`อัพเดทข้อมูล Sanook เพิ่มเติม (งวดที่อยู่ใน DB แล้ว) ${updatedExtra} งวด`);
+        }
       }
       
       // แสดงข้อมูลล่าสุด (แปลงเป็นเวลาไทย)

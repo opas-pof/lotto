@@ -83,7 +83,8 @@ export class DatabaseManager {
           roundDate = date.toISOString();
         }
         
-        const data = {
+        // ไม่ส่ง animal_name / phathana_numbers ถ้าไม่มีค่า เพื่อไม่ให้เขียนทับข้อมูล Sanook เดิมเป็น null
+        const data: Record<string, unknown> = {
           source_id: resultData.id,
           round_id: resultData.roundId || null,
           round_date: roundDate,
@@ -95,10 +96,14 @@ export class DatabaseManager {
           is_close_sale: resultData.isCloseSale || false,
           round_status: resultData.roundStatus || null,
           is_jackpot: resultData.isjackpot || false,
-          animal_name: resultData.animalName || null,
-          phathana_numbers: resultData.phathanaNumbers || null,
           updated_at: new Date().toISOString()
         };
+        if (resultData.animalName != null && resultData.animalName !== '') {
+          data.animal_name = resultData.animalName;
+        }
+        if (resultData.phathanaNumbers != null && resultData.phathanaNumbers.length > 0) {
+          data.phathana_numbers = resultData.phathanaNumbers;
+        }
         
         // ใช้ upsert (INSERT ... ON CONFLICT UPDATE) สำหรับ Supabase
         const { error } = await this.supabase
