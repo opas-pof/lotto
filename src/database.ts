@@ -249,4 +249,48 @@ export class DatabaseManager {
       return 0;
     }
   }
+
+  /**
+   * บันทึกงวด placeholder (วันที่มีงวดแต่ผลยังไม่ออก)
+   * ใช้ source_id เป็นค่าลบจาก YYYYMMDD เพื่อไม่ชนกับ id จาก API
+   * Frontend จะได้แสดงงวดที่จะถึงแม้ win_number / animal_name / phathana_numbers จะเป็น null
+   */
+  async insertPlaceholderRound(date: string, lotteryType: string = 'phathana'): Promise<number> {
+    try {
+      const sourceId = -Math.abs(parseInt(date.replace(/-/g, ''), 10));
+      const roundDate = `${date}T12:00:00.000Z`;
+
+      const { error } = await this.supabase
+        .from('lottery_results')
+        .upsert({
+          source_id: sourceId,
+          round_id: null,
+          round_date: roundDate,
+          round_number: null,
+          win_number: null,
+          lot_number: null,
+          year_id: null,
+          lottery_type: lotteryType,
+          is_close_sale: false,
+          round_status: null,
+          is_jackpot: false,
+          animal_name: null,
+          phathana_numbers: null,
+          updated_at: new Date().toISOString()
+        }, {
+          onConflict: 'source_id',
+          ignoreDuplicates: false
+        });
+
+      if (error) {
+        console.error(`Error inserting placeholder round ${date}:`, error);
+        return 0;
+      }
+      console.log(`บันทึกงวด placeholder สำหรับวันที่ ${date} สำเร็จ`);
+      return 1;
+    } catch (error) {
+      console.error('Error inserting placeholder round:', error);
+      return 0;
+    }
+  }
 }

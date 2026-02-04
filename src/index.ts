@@ -99,28 +99,34 @@ export default {
   /**
    * จัดการ Cron Triggers (scheduled tasks)
    * รันทุกวันจันทร์, พุธ, ศุกร์ เวลา 20:30 น. (UTC+7)
-   * ดึงข้อมูลทั้งหมดจากทั้ง 2 source (API + Sanook) และบันทึกลง DB
+   * ดึงเฉพาะงวดล่าสุดจากทั้ง 2 source แล้วบันทึก (ถ้ารัน manual ไปแล้ว จะไม่ดึงทุกงวดต่อครั้ง)
    */
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     console.log('Cron trigger fired at:', new Date().toISOString());
-    
+
+    const CRON_LATEST_ROUNDS = 2;
+
     const scraper = new LotteryScraper();
     const sanookScraper = new SanookScraper();
     const db = new DatabaseManager(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
     
     try {
-      // ดึงข้อมูลทั้งหมดจากทั้ง 2 source (เหมือน manual page)
-      console.log('กำลังดึงข้อมูลทั้งหมด...');
+      console.log(`กำลังดึงเฉพาะงวดล่าสุด ${CRON_LATEST_ROUNDS} งวด...`);
       
-      // ดึงข้อมูลเลข 6 หลัก
+      // ดึงข้อมูลเลข 6 หลักจาก API (API ส่งมาทั้งหมด เราคัดเฉพาะงวดล่าสุด)
       console.log('กำลังดึงข้อมูลเลข 6 หลักจาก API...');
-      const phathanaResults = await scraper.getPhathanaResults();
-      console.log(`พบข้อมูลเลข 6 หลัก ${phathanaResults.length} รายการ`);
+      const allPhathana = await scraper.getPhathanaResults();
+      const phathanaResults = (allPhathana && allPhathana.length > 0)
+        ? allPhathana
+          .sort((a, b) => new Date(b.roundDate).getTime() - new Date(a.roundDate).getTime())
+          .slice(0, CRON_LATEST_ROUNDS)
+        : [];
+      console.log(`ใช้ข้อมูลเลข 6 หลัก ${phathanaResults.length} งวดล่าสุด (จากทั้งหมด ${allPhathana?.length ?? 0} งวด)`);
       
-      // ดึงข้อมูลจาก Sanook
-      console.log('กำลังดึงข้อมูลจาก Sanook...');
-      const { results: sanookResults } = await sanookScraper.scrapeResults();
-      console.log(`พบข้อมูลจาก Sanook ${sanookResults.length} งวด`);
+      // ดึงข้อมูลจาก Sanook เฉพาะงวดล่าสุด
+      console.log('กำลังดึงข้อมูลจาก Sanook (งวดล่าสุด)...');
+      const { results: sanookResults } = await sanookScraper.getLatestResults(CRON_LATEST_ROUNDS);
+      console.log(`ใช้ข้อมูลจาก Sanook ${sanookResults.length} งวดล่าสุด`);
       
       // สร้าง map จาก Sanook results (ใช้ date เป็น key)
       const sanookMap = new Map<string, SanookLotteryResult>();
@@ -131,6 +137,12 @@ export default {
       let savedPhathanaCount = 0;
       let savedSanookCount = 0;
       
+      // ชุดวันที่ที่มีแถวจาก API (หลัง save แล้วจะมีแถวใน DB)
+      const datesFromPhathana = new Set<string>();
+      if (phathanaResults && phathanaResults.length > 0) {
+        phathanaResults.forEach(item => datesFromPhathana.add(toThaiDate(item.roundDate)));
+      }
+
       // รวมข้อมูล Sanook เข้าไปใน phathana ก่อน save ครั้งเดียว (ป้องกันการเขียนทับ animal_name, phathana_numbers เป็น null)
       if (phathanaResults && phathanaResults.length > 0) {
         const sortedResults = phathanaResults
@@ -152,8 +164,25 @@ export default {
         savedSanookCount = mergedResults.filter(r => r.animalName || (r.phathanaNumbers && r.phathanaNumbers.length > 0)).length;
         console.log(`บันทึกข้อมูลเลข 6 หลัก + Sanook ${savedPhathanaCount} รายการ (มีข้อมูล Sanook ${savedSanookCount} งวด)`);
       }
+
+      // หลักการเดียวกับ manual: งวดที่อยู่ใน Sanook แต่ไม่มีใน API ต้องมีแถวใน DB ก่อน (insert placeholder) แล้วค่อยอัพเดท Sanook
+      let placeholderCount = 0;
+      for (const sanookResult of sanookResults) {
+        if (!datesFromPhathana.has(sanookResult.date)) {
+          const inserted = await db.insertPlaceholderRound(sanookResult.date, 'phathana');
+          if (inserted > 0) placeholderCount++;
+        }
+      }
+      const nextDrawDate = getNextDrawDateThai();
+      if (nextDrawDate && !datesFromPhathana.has(nextDrawDate) && !sanookResults.some(r => r.date === nextDrawDate)) {
+        const inserted = await db.insertPlaceholderRound(nextDrawDate, 'phathana');
+        if (inserted > 0) placeholderCount++;
+      }
+      if (placeholderCount > 0) {
+        console.log(`บันทึกงวด placeholder (รอผล) ${placeholderCount} งวด`);
+      }
       
-      // อัพเดทเฉพาะงวดที่อยู่ใน Sanook แต่ไม่มีใน API (เช่น แถวที่เคยบันทึก manual)
+      // อัพเดทข้อมูล Sanook ทุกงวด (ทั้งที่เพิ่งสร้าง placeholder และที่เคยมีแถวจาก API)
       if (sanookResults && sanookResults.length > 0) {
         let updatedExtra = 0;
         for (const sanookResult of sanookResults) {
@@ -166,7 +195,7 @@ export default {
           if (updateCount > 0) updatedExtra++;
         }
         if (updatedExtra > 0) {
-          console.log(`อัพเดทข้อมูล Sanook เพิ่มเติม (งวดที่อยู่ใน DB แล้ว) ${updatedExtra} งวด`);
+          console.log(`อัพเดทข้อมูล Sanook ${updatedExtra} งวด`);
         }
       }
       
@@ -190,7 +219,7 @@ export default {
         }
       }
       
-      console.log(`เสร็จสิ้น! บันทึกเลข 6 หลัก: ${savedPhathanaCount} รายการ, อัพเดท Sanook: ${savedSanookCount} งวด`);
+      console.log(`เสร็จสิ้น! บันทึกเลข 6 หลัก: ${savedPhathanaCount} รายการ, Sanook ใน merged: ${savedSanookCount} งวด, placeholder: ${placeholderCount} งวด`);
     } catch (error) {
       console.error('เกิดข้อผิดพลาด:', error);
       throw error;
@@ -1316,6 +1345,30 @@ function formatThaiDateTime(dateString: string): string {
 }
 
 /**
+ * คืนงวดถัดไปที่ผลยังไม่ออก (วันออกรางวัล: จันทร์, พุธ, ศุกร์) ในเวลาไทย
+ * ใช้สำหรับ manual ให้รวมงวดที่จะถึงในรายการดึงข้อมูล
+ */
+function getNextDrawDateThai(): string {
+  const thaiOffset = 7 * 60 * 60 * 1000;
+  const t = new Date(Date.now() + thaiOffset);
+  const y = t.getUTCFullYear();
+  const m = t.getUTCMonth();
+  const day = t.getUTCDate();
+  const start = Date.UTC(y, m, day);
+  for (let i = 0; i <= 7; i++) {
+    const d2 = new Date(start + i * 24 * 60 * 60 * 1000);
+    const dow = d2.getUTCDay();
+    if (dow === 1 || dow === 3 || dow === 5) {
+      const y2 = d2.getUTCFullYear();
+      const m2 = d2.getUTCMonth();
+      const d2d = d2.getUTCDate();
+      return `${y2}-${String(m2 + 1).padStart(2, '0')}-${String(d2d).padStart(2, '0')}`;
+    }
+  }
+  return '';
+}
+
+/**
  * จัดการ GET /api/available-dates - ดึงวันที่ที่มีใน API (สำหรับเลือก scrape)
  */
 async function handleGetAvailableDates(env: Env): Promise<Response> {
@@ -1596,6 +1649,22 @@ async function handleFetchAll(request: Request, env: Env): Promise<Response> {
     
     // เรียงตามวันที่จากใหม่ไปเก่า
     combinedData.sort((a, b) => b.date.localeCompare(a.date));
+
+    // หลักการงวดล่าสุดที่ผลยังไม่ออก: รวมงวดถัดไป (จันทร์/พุธ/ศุกร์) ในรายการด้วย เพื่อให้ manual บันทึกเป็น placeholder ได้
+    const nextDrawDate = getNextDrawDateThai();
+    if (nextDrawDate && !combinedData.some(d => d.date === nextDrawDate)) {
+      combinedData.push({
+        date: nextDrawDate,
+        winNumber: undefined,
+        roundNumber: undefined,
+        roundDate: undefined,
+        isJackpot: false,
+        animalName: undefined,
+        phathanaNumbers: undefined,
+        phathanaNumbersRaw: undefined
+      });
+      combinedData.sort((a, b) => b.date.localeCompare(a.date));
+    }
     
     return new Response(JSON.stringify({
       success: true,
@@ -1737,23 +1806,42 @@ async function handleSaveFetched(request: Request, env: Env): Promise<Response> 
           console.error(`Error saving Sanook data for ${item.date}:`, error);
         }
       }
-      
-      // สร้างข้อความผลลัพธ์
-      const messages: string[] = [];
-      if (phathanaSaved) messages.push('บันทึกเลข 6 หลักสำเร็จ');
-      if (sanookSaved) messages.push('บันทึกข้อมูล Sanook สำเร็จ');
-      
-      if (phathanaSaved || sanookSaved) {
+
+      // ถ้ายังไม่มีแถวใน DB (งวดที่ผลยังไม่ออก) ให้บันทึกเป็น placeholder เพื่อให้ frontend แสดงงวดที่จะถึงได้
+      if (!phathanaSaved && !sanookSaved) {
+        try {
+          const inserted = await db.insertPlaceholderRound(item.date, 'phathana');
+          if (inserted > 0) {
+            savedCount++;
+            saveResults.push({
+              date: item.date,
+              success: true,
+              message: 'บันทึกงวด (รอผล)'
+            });
+          } else {
+            saveResults.push({
+              date: item.date,
+              success: false,
+              message: 'ไม่พบข้อมูลงวดที่ตรงกันใน DB หรือไม่มีข้อมูลที่จะบันทึก'
+            });
+          }
+        } catch (error) {
+          console.error(`Error inserting placeholder for ${item.date}:`, error);
+          saveResults.push({
+            date: item.date,
+            success: false,
+            message: 'ไม่พบข้อมูลงวดที่ตรงกันใน DB หรือไม่มีข้อมูลที่จะบันทึก'
+          });
+        }
+      } else {
+        // สร้างข้อความผลลัพธ์ (กรณีบันทึกเลข 6 หลักหรือ Sanook ได้แล้ว)
+        const messages: string[] = [];
+        if (phathanaSaved) messages.push('บันทึกเลข 6 หลักสำเร็จ');
+        if (sanookSaved) messages.push('บันทึกข้อมูล Sanook สำเร็จ');
         saveResults.push({
           date: item.date,
           success: true,
           message: messages.join(', ')
-        });
-      } else {
-        saveResults.push({
-          date: item.date,
-          success: false,
-          message: 'ไม่พบข้อมูลงวดที่ตรงกันใน DB หรือไม่มีข้อมูลที่จะบันทึก'
         });
       }
     }
