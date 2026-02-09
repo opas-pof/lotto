@@ -83,7 +83,7 @@ export class DatabaseManager {
           roundDate = date.toISOString();
         }
         
-        const data: Record<string, unknown> = {
+        const data = {
           source_id: resultData.id,
           round_id: resultData.roundId || null,
           round_date: roundDate,
@@ -95,12 +95,10 @@ export class DatabaseManager {
           is_close_sale: resultData.isCloseSale || false,
           round_status: resultData.roundStatus || null,
           is_jackpot: resultData.isjackpot || false,
+          animal_name: resultData.animalName || null,
+          phathana_numbers: resultData.phathanaNumbers || null,
           updated_at: new Date().toISOString()
         };
-        // ใส่ animal_name / phathana_numbers เฉพาะเมื่อมีค่า (จาก Sanook)
-        // ถ้าไม่ใส่ จะไม่เขียนทับค่าที่มีอยู่ใน DB (สำคัญเมื่อบันทึกจาก DLL ก่อน แล้วค่อยอัพเดทจาก Sanook ทีหลัง)
-        if (resultData.animalName !== undefined) data.animal_name = resultData.animalName;
-        if (resultData.phathanaNumbers !== undefined) data.phathana_numbers = resultData.phathanaNumbers;
         
         // ใช้ upsert (INSERT ... ON CONFLICT UPDATE) สำหรับ Supabase
         const { error } = await this.supabase
@@ -169,7 +167,7 @@ export class DatabaseManager {
   
   /**
    * อัพเดทข้อมูลจาก Sanook (animal_name และ phathana_numbers)
-   * ใช้ round_date (เทียบเฉพาะส่วนวันที่ YYYY-MM-DD) และ lottery_type
+   * ใช้ round_date และ lottery_type เป็น key
    */
   async updateSanookData(
     date: string, // YYYY-MM-DD
@@ -178,28 +176,31 @@ export class DatabaseManager {
     lotteryType: string = 'phathana'
   ): Promise<number> {
     try {
-      const startDate = new Date(date + 'T00:00:00.000Z').toISOString();
-      const endDate = new Date(date + 'T23:59:59.999Z').toISOString();
-
+      // แปลงวันที่เป็นช่วงเวลา (เริ่มต้นวัน - สิ้นสุดวัน)
+      const startDate = new Date(date + 'T00:00:00Z').toISOString();
+      const endDate = new Date(date + 'T23:59:59Z').toISOString();
+      
+      // หาข้อมูลที่มี round_date อยู่ในช่วงวันที่นี้
       const { data: existingData, error: findError } = await this.supabase
         .from('lottery_results')
-        .select('id, source_id, round_date')
+        .select('id, source_id')
         .eq('lottery_type', lotteryType)
         .gte('round_date', startDate)
         .lte('round_date', endDate)
         .order('round_date', { ascending: false })
         .limit(1);
-
+      
       if (findError) {
-        console.error('Error finding existing data for Sanook update:', findError);
+        console.error('Error finding existing data:', findError);
         return 0;
       }
-
+      
       if (!existingData || existingData.length === 0) {
-        console.warn(`[Sanook] ไม่พบแถวใน DB สำหรับวันที่ ${date} (lottery_type=${lotteryType})`);
+        console.warn(`ไม่พบข้อมูลสำหรับวันที่ ${date}`);
         return 0;
       }
-
+      
+      // อัพเดทข้อมูล
       const { error: updateError } = await this.supabase
         .from('lottery_results')
         .update({
@@ -208,13 +209,13 @@ export class DatabaseManager {
           updated_at: new Date().toISOString()
         })
         .eq('id', existingData[0].id);
-
+      
       if (updateError) {
         console.error('Error updating Sanook data:', updateError);
         return 0;
       }
-
-      console.log(`[Sanook] อัพเดทแถว id=${existingData[0].id} วันที่ ${date} สำเร็จ (animal=${animalName ?? 'null'}, phathana=${phathanaNumbers?.length ?? 0} ชุด)`);
+      
+      console.log(`อัพเดทข้อมูล Sanook สำหรับวันที่ ${date} สำเร็จ`);
       return 1;
     } catch (error) {
       console.error('Error updating Sanook data:', error);

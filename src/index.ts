@@ -12,11 +12,6 @@ export interface Env {
   SUPABASE_SERVICE_ROLE_KEY: string;
 }
 
-/** แปลง round_date (ISO หรือ date string) เป็น YYYY-MM-DD (UTC) สำหรับจับคู่กับ Sanook */
-function roundDateToYYYYMMDD(roundDate: string): string {
-  return new Date(roundDate).toISOString().slice(0, 10);
-}
-
 export default {
   /**
    * จัดการ HTTP requests
@@ -80,80 +75,72 @@ export default {
   /**
    * จัดการ Cron Triggers (scheduled tasks)
    * รันทุกวันจันทร์, พุธ, ศุกร์ เวลา 20:30 น. (UTC+7)
-   *
-   * ลำดับการทำงาน (ห้ามสลับ):
-   * 1) ดึงผลเลข 6 หลักจาก DLL (laodl.com) → บันทึกลง DB (ไม่เขียนทับ animal_name / phathana_numbers)
-   * 2) ดึงผลชื่อสัตว์ + เลขชุดหวยพัฒนา จาก Sanook
-   * 3) อัพเดทแถวที่ตรงกับวันที่ (สำหรับแต่ละงวดที่บันทึกจาก DLL)
+   * ดึงข้อมูลหวยพัฒนาเฉพาะ 5 รายการล่าสุด
    */
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     console.log('Cron trigger fired at:', new Date().toISOString());
-
+    
     const scraper = new LotteryScraper();
     const db = new DatabaseManager(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
-
+    
     try {
-      // --- ขั้นที่ 1: ดึงผลเลข 6 หลักจาก DLL และบันทึกลง DB ---
-      console.log('[1/3] กำลังดึงผลหวยพัฒนา (เลข 6 หลัก) จาก DLL...');
+      // ดึงข้อมูลผลหวยพัฒนา (เฉพาะ 5 รายการล่าสุด)
+      console.log('กำลังดึงข้อมูลผลหวย...');
       const phathanaResults = await scraper.getPhathanaResults();
+      
       const savedCounts: Record<string, number> = {};
-
-      let savedDates: string[] = [];
+      
+      // บันทึกข้อมูลหวยพัฒนา (เฉพาะ 5 รายการล่าสุด)
       if (phathanaResults && phathanaResults.length > 0) {
+        // เรียงตาม roundDate จากใหม่ไปเก่า และเอาแค่ 5 รายการล่าสุด
         const sortedResults = phathanaResults
           .sort((a, b) => new Date(b.roundDate).getTime() - new Date(a.roundDate).getTime())
           .slice(0, 5);
-        savedDates = sortedResults.map((r) => roundDateToYYYYMMDD(r.roundDate));
-        console.log(`พบข้อมูลหวยพัฒนา ${phathanaResults.length} รายการ (เลือก 5 รายการล่าสุด: ${savedDates.join(', ')})`);
+        
+        console.log(`พบข้อมูลหวยพัฒนา ${phathanaResults.length} รายการ (เลือก 5 รายการล่าสุด)`);
         savedCounts.phathana = await db.saveLotteryResults(sortedResults, 'phathana');
         console.log(`บันทึกข้อมูลหวยพัฒนา ${savedCounts.phathana} รายการ`);
       } else {
         console.warn('ไม่พบข้อมูลหวยพัฒนา');
       }
-
-      // --- ขั้นที่ 2: ดึงผลชื่อสัตว์ + เลขชุดจาก Sanook ---
-      console.log('[2/3] กำลังดึงข้อมูลชื่อนามสัตว์และหวยลาวพัฒนา จาก Sanook...');
+      
+      // ดึงข้อมูลจาก Sanook (ชื่อนามสัตว์และหวยลาวพัฒนา)
+      console.log('กำลังดึงข้อมูลจาก Sanook...');
       const sanookScraper = new SanookScraper();
       const { results: sanookResults } = await sanookScraper.getLatestResults(5);
-
+      
       if (sanookResults && sanookResults.length > 0) {
         console.log(`พบข้อมูลจาก Sanook ${sanookResults.length} งวด`);
-        const sanookByDate: Record<string, SanookLotteryResult> = {};
-        for (const r of sanookResults) sanookByDate[r.date] = r;
-
-        // --- ขั้นที่ 3: อัพเดทแถวที่ตรงกับวันที่ (ใช้วันที่จากแถวที่เพิ่งบันทึกจาก DLL) ---
-        let updated = 0;
-        for (const date of savedDates) {
-          const sanookResult = sanookByDate[date];
-          if (sanookResult) {
-            const n = await db.updateSanookData(
-              date,
-              sanookResult.animalName || null,
-              sanookResult.phathanaNumbers.length > 0 ? sanookResult.phathanaNumbers : null,
-              'phathana'
-            );
-            updated += n;
-          } else {
-            console.warn(`[Sanook] ไม่มีข้อมูล Sanook สำหรับวันที่ ${date}`);
-          }
+        
+        // อัพเดทข้อมูลแต่ละงวด
+        for (const sanookResult of sanookResults) {
+          await db.updateSanookData(
+            sanookResult.date,
+            sanookResult.animalName || null,
+            sanookResult.phathanaNumbers.length > 0 ? sanookResult.phathanaNumbers : null,
+            'phathana'
+          );
         }
-        console.log(`[3/3] อัพเดทข้อมูล Sanook สำเร็จ ${updated}/${savedDates.length} งวด`);
+        
+        console.log(`อัพเดทข้อมูล Sanook สำเร็จ ${sanookResults.length} งวด`);
       } else {
         console.warn('ไม่พบข้อมูลจาก Sanook');
       }
-
+      
+      // แสดงข้อมูลล่าสุด (แปลงเป็นเวลาไทย)
       const latestPhathana = await db.getLatestResult('phathana');
       if (latestPhathana) {
         const date = new Date(latestPhathana.round_date);
         const thaiDate = new Date(date.getTime() + (7 * 60 * 60 * 1000));
         const dateStr = thaiDate.toISOString().split('T')[0];
-        const timeStr = thaiDate.toLocaleTimeString('th-TH', {
+        const timeStr = thaiDate.toLocaleTimeString('th-TH', { 
           timeZone: 'Asia/Bangkok',
           hour: '2-digit',
           minute: '2-digit'
         });
         console.log(`หวยพัฒนาล่าสุด: ${dateStr} ${timeStr} น. - ${latestPhathana.win_number}`);
       }
+      
       console.log('เสร็จสิ้น!');
     } catch (error) {
       console.error('เกิดข้อผิดพลาด:', error);
@@ -1135,24 +1122,24 @@ async function handleScrape(request: Request, env: Env): Promise<Response> {
       phathana: []
     };
     
-    // บันทึกข้อมูลหวยพัฒนา (ไม่เขียนทับ animal_name / phathana_numbers)
-    let savedDates: string[] = [];
+    // บันทึกข้อมูลหวยพัฒนา
     if (phathanaResults && phathanaResults.length > 0) {
       savedCounts.phathana = await db.saveLotteryResults(phathanaResults, 'phathana');
-      savedDates = phathanaResults.map((r: { roundDate: string }) => roundDateToYYYYMMDD(r.roundDate));
+      // เก็บข้อมูลที่ scrape มาเพื่อแสดงผล
       scrapedData.phathana = phathanaResults.map(item => ({
         roundDate: item.roundDate,
         roundNumber: item.roundNumber,
         winNumber: item.winNumber,
         isJackpot: item.isjackpot
       }));
-
-      // ดึงจาก Sanook แล้วอัพเดทเฉพาะวันที่ที่เราเพิ่งบันทึกจาก DLL
-      const sanookScraper = new SanookScraper();
+      
+      // ดึงข้อมูลจาก Sanook สำหรับวันที่ที่ scrape
       if (targetDate) {
         console.log(`กำลังดึงข้อมูลจาก Sanook สำหรับวันที่ ${targetDate}...`);
+        const sanookScraper = new SanookScraper();
         const { results: sanookResults } = await sanookScraper.scrapeResults();
         const sanookResult = sanookResults.find((r: SanookLotteryResult) => r.date === targetDate);
+        
         if (sanookResult) {
           await db.updateSanookData(
             targetDate,
@@ -1163,23 +1150,20 @@ async function handleScrape(request: Request, env: Env): Promise<Response> {
           console.log(`อัพเดทข้อมูล Sanook สำหรับวันที่ ${targetDate} สำเร็จ`);
         }
       } else {
+        // ถ้าไม่ระบุ date ให้ดึง 5 งวดล่าสุด
         console.log('กำลังดึงข้อมูลจาก Sanook (5 งวดล่าสุด)...');
+        const sanookScraper = new SanookScraper();
         const { results: sanookResults } = await sanookScraper.getLatestResults(5);
-        const sanookByDate: Record<string, SanookLotteryResult> = {};
-        for (const r of sanookResults) sanookByDate[r.date] = r;
-        let updated = 0;
-        for (const date of savedDates) {
-          const sanookResult = sanookByDate[date];
-          if (sanookResult) {
-            updated += await db.updateSanookData(
-              date,
-              sanookResult.animalName || null,
-              sanookResult.phathanaNumbers.length > 0 ? sanookResult.phathanaNumbers : null,
-              'phathana'
-            );
-          }
+        
+        for (const sanookResult of sanookResults) {
+          await db.updateSanookData(
+            sanookResult.date,
+            sanookResult.animalName || null,
+            sanookResult.phathanaNumbers.length > 0 ? sanookResult.phathanaNumbers : null,
+            'phathana'
+          );
         }
-        console.log(`อัพเดทข้อมูล Sanook สำเร็จ ${updated}/${savedDates.length} งวด`);
+        console.log(`อัพเดทข้อมูล Sanook สำเร็จ ${sanookResults.length} งวด`);
       }
     }
     
