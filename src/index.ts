@@ -103,7 +103,7 @@ export default {
         const sortedResults = phathanaResults
           .sort((a, b) => new Date(b.roundDate).getTime() - new Date(a.roundDate).getTime())
           .slice(0, 5);
-        savedDates = sortedResults.map((r) => roundDateToYYYYMMDD(r.roundDate));
+        savedDates = sortedResults.map((r) => toThaiDate(r.roundDate));
         console.log(`พบข้อมูลหวยพัฒนา ${phathanaResults.length} รายการ (เลือก 5 รายการล่าสุด: ${savedDates.join(', ')})`);
         savedCounts.phathana = await db.saveLotteryResults(sortedResults, 'phathana');
         console.log(`บันทึกข้อมูลหวยพัฒนา ${savedCounts.phathana} รายการ`);

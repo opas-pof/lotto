@@ -83,24 +83,23 @@ export class DatabaseManager {
           roundDate = date.toISOString();
         }
         
+        // สร้าง payload — ฟิลด์ที่อาจเป็นค่าว่างจาก API (งวดรอผล) ใส่เฉพาะเมื่อมีค่า เพื่อไม่ให้ไปเขียนทับค่าเดิมใน DB
         const data: Record<string, unknown> = {
           source_id: resultData.id,
-          round_id: resultData.roundId || null,
+          round_id: resultData.roundId ?? null,
           round_date: roundDate,
-          round_number: resultData.roundNumber || null,
-          win_number: resultData.winNumber || null,
-          lot_number: resultData.lotNumber || null,
-          year_id: resultData.yearId || null,
+          lot_number: resultData.lotNumber ?? null,
+          year_id: resultData.yearId ?? null,
           lottery_type: lotteryType,
-          is_close_sale: resultData.isCloseSale || false,
-          round_status: resultData.roundStatus || null,
-          is_jackpot: resultData.isjackpot || false,
+          is_close_sale: resultData.isCloseSale ?? false,
+          round_status: resultData.roundStatus ?? null,
+          is_jackpot: resultData.isjackpot ?? false,
           updated_at: new Date().toISOString()
         };
-        // สำคัญ: ใส่ animal_name / phathana_numbers ใน payload เฉพาะเมื่อมีค่า (จาก Sanook)
-        // ข้อมูลจาก DLL (scraper.ts LotteryResult) ไม่มีฟิลด์เหล่านี้ → key จะไม่ถูกใส่ → ตอน upsert UPDATE จะไม่แตะคอลัมน์นี้
-        if (resultData.animalName !== undefined) data.animal_name = resultData.animalName;
-        if (resultData.phathanaNumbers !== undefined) data.phathana_numbers = resultData.phathanaNumbers;
+        if (resultData.roundNumber != null && resultData.roundNumber !== '') data.round_number = resultData.roundNumber;
+        if (resultData.winNumber != null && resultData.winNumber !== '') data.win_number = resultData.winNumber;
+        if (resultData.animalName != null && resultData.animalName !== '') data.animal_name = resultData.animalName;
+        if (resultData.phathanaNumbers != null && resultData.phathanaNumbers.length > 0) data.phathana_numbers = resultData.phathanaNumbers;
 
         // ใช้ upsert (INSERT ... ON CONFLICT UPDATE) สำหรับ Supabase
         const { error } = await this.supabase
@@ -169,33 +168,41 @@ export class DatabaseManager {
   
   /**
    * อัพเดทข้อมูลจาก Sanook (animal_name และ phathana_numbers)
-   * หาแถวจาก round_date อยู่ในช่วงวันที่ YYYY-MM-DD (UTC) และ lottery_type
+   * date = YYYY-MM-DD ในเวลาไทย — หาแถวที่ round_date (UTC) แปลงเป็นวันไทยแล้วตรงกับ date
    */
   async updateSanookData(
-    date: string, // YYYY-MM-DD
+    date: string, // YYYY-MM-DD (เวลาไทย)
     animalName: string | null,
     phathanaNumbers: string[] | null,
     lotteryType: string = 'phathana'
   ): Promise<number> {
     try {
-      const startDate = new Date(date + 'T00:00:00.000Z').toISOString();
-      const endDate = new Date(date + 'T23:59:59.999Z').toISOString();
-
-      const { data: existingData, error: findError } = await this.supabase
+      const { data: allRows, error: findError } = await this.supabase
         .from('lottery_results')
         .select('id, source_id, round_date')
         .eq('lottery_type', lotteryType)
-        .gte('round_date', startDate)
-        .lte('round_date', endDate)
         .order('round_date', { ascending: false })
-        .limit(1);
+        .limit(100);
 
       if (findError) {
         console.error('Error finding existing data for Sanook update:', findError);
         return 0;
       }
+      if (!allRows || allRows.length === 0) return 0;
 
-      if (!existingData || existingData.length === 0) {
+      const THAI_OFFSET_MS = 7 * 60 * 60 * 1000;
+      let match = null;
+      for (const row of allRows) {
+        const utc = new Date(row.round_date).getTime();
+        const thaiDateStr = new Date(utc + THAI_OFFSET_MS).toISOString().slice(0, 10);
+        if (thaiDateStr === date) {
+          match = row;
+          break;
+        }
+      }
+      const existingData = match ? [match] : [];
+
+      if (existingData.length === 0) {
         console.warn(`[Sanook] ไม่พบแถวใน DB สำหรับวันที่ ${date} (lottery_type=${lotteryType})`);
         return 0;
       }
