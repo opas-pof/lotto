@@ -2,7 +2,8 @@
  * จัดการการเชื่อมต่อและทำงานกับ Supabase (PostgreSQL) database
  */
 
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { laodlRoundDateToUtcIso, roundDateToThaiYMD } from './thailand-date';
 
 export interface LotteryResultRow {
   id?: number;
@@ -23,9 +24,10 @@ export interface LotteryResultRow {
   updated_at?: string;
 }
 
+/** ไม่ใส่ generic Database แบบเขียนมือ — ต้องครบ GenericSchema ของ postgrest-js v2 (Tables + Views + Functions + Relationships ฯลฯ) ไม่งั้น .from() จะกลายเป็น never */
 export class DatabaseManager {
-  private supabase: ReturnType<typeof createClient>;
-  
+  private supabase: SupabaseClient<any, 'public', any>;
+
   constructor(supabaseUrl: string, supabaseKey: string) {
     this.supabase = createClient(supabaseUrl, supabaseKey);
   }
@@ -58,30 +60,11 @@ export class DatabaseManager {
     
     for (const resultData of results) {
       try {
-        // แปลงวันที่ - เก็บเป็น UTC ใน database (PostgreSQL TIMESTAMPTZ)
-        // API laodl.com ส่งวันที่มาในรูปแบบ ISO string
-        // เก็บเป็น UTC ใน database (PostgreSQL จะจัดการ timezone อัตโนมัติ)
-        // เมื่อ query กลับมาจะได้เป็น UTC แล้วต้องแปลงเป็นเวลาไทยตอนแสดงผล
-        
-        // ตรวจสอบว่า dateString มี timezone indicator หรือไม่
-        const isUTC = resultData.roundDate.includes('Z') || 
-                     resultData.roundDate.includes('+00:00') ||
-                     resultData.roundDate.includes('+0000') ||
-                     resultData.roundDate.match(/\+00:00$/) ||
-                     resultData.roundDate.match(/\+0000$/);
-        
-        let roundDate: string;
-        
-        if (isUTC) {
-          // เป็น UTC แล้ว ใช้ได้เลย
-          roundDate = new Date(resultData.roundDate).toISOString();
-        } else {
-          // ถ้าไม่มี timezone indicator
-          // สร้าง Date object แล้วแปลงเป็น UTC ISO string
-          // PostgreSQL TIMESTAMPTZ จะเก็บเป็น UTC อัตโนมัติ
-          const date = new Date(resultData.roundDate);
-          roundDate = date.toISOString();
+        const roundDateIso = laodlRoundDateToUtcIso(resultData.roundDate);
+        if (roundDateIso == null) {
+          continue;
         }
+        const roundDate = roundDateIso;
         
         // สร้าง payload — ฟิลด์ที่อาจเป็นค่าว่างจาก API (งวดรอผล) ใส่เฉพาะเมื่อมีค่า เพื่อไม่ให้ไปเขียนทับค่าเดิมใน DB
         const data: Record<string, unknown> = {
@@ -101,7 +84,6 @@ export class DatabaseManager {
         if (resultData.animalName != null && resultData.animalName !== '') data.animal_name = resultData.animalName;
         if (resultData.phathanaNumbers != null && resultData.phathanaNumbers.length > 0) data.phathana_numbers = resultData.phathanaNumbers;
 
-        // ใช้ upsert (INSERT ... ON CONFLICT UPDATE) สำหรับ Supabase
         const { error } = await this.supabase
           .from('lottery_results')
           .upsert(data, {
@@ -190,12 +172,11 @@ export class DatabaseManager {
       }
       if (!allRows || allRows.length === 0) return 0;
 
-      const THAI_OFFSET_MS = 7 * 60 * 60 * 1000;
       let match = null;
       for (const row of allRows) {
-        const utc = new Date(row.round_date).getTime();
-        const thaiDateStr = new Date(utc + THAI_OFFSET_MS).toISOString().slice(0, 10);
-        if (thaiDateStr === date) {
+        const rd = typeof row.round_date === 'string' ? row.round_date : String(row.round_date);
+        const thaiDateStr = roundDateToThaiYMD(rd);
+        if (thaiDateStr && thaiDateStr === date) {
           match = row;
           break;
         }
@@ -207,6 +188,7 @@ export class DatabaseManager {
         return 0;
       }
 
+      const rowId = existingData[0].id;
       const { error: updateError } = await this.supabase
         .from('lottery_results')
         .update({
@@ -214,7 +196,7 @@ export class DatabaseManager {
           phathana_numbers: phathanaNumbers,
           updated_at: new Date().toISOString()
         })
-        .eq('id', existingData[0].id);
+        .eq('id', rowId);
 
       if (updateError) {
         console.error('Error updating Sanook data:', updateError);

@@ -1,6 +1,12 @@
 import { LotteryScraper } from './scraper';
 import { SanookScraper, SanookLotteryResult } from './sanook-scraper';
 import { DatabaseManager } from './database';
+import {
+  getBangkokTodayYMD,
+  roundDateToThaiYMD,
+  filterByThaiCalendarNotAfterToday,
+  pickLatestRoundDateIndex
+} from './thailand-date';
 
 export interface Env {
   SUPABASE_URL: string;
@@ -8,49 +14,25 @@ export interface Env {
   SUPABASE_SERVICE_ROLE_KEY: string;
 }
 
-/**
- * แปลง roundDate (ISO/date string จาก laodl) ให้เป็น YYYY-MM-DD (เวลาไทย) สำหรับจับคู่กับ Sanook
- * อิง logic เดิมของโปรเจกต์เดิม เพื่อไม่ให้เกิดการเลื่อนวันจากการแปลง timezone
- */
-function toThaiDate(dateString: string): string {
-  const date = new Date(dateString);
-
-  const isUTC =
-    dateString.includes('Z') ||
-    dateString.includes('+00:00') ||
-    dateString.includes('+0000') ||
-    dateString.match(/\+00:00$/) ||
-    dateString.match(/\+0000$/);
-
-  if (isUTC) {
-    const thaiDate = new Date(date.getTime() + 7 * 60 * 60 * 1000);
-    return thaiDate.toISOString().split('T')[0];
-  }
-
-  // กรณีที่ string ไม่มี timezone indicator: ให้คงพฤติกรรมเดิมของโปรเจกต์
-  const utcTime = Date.UTC(
-    date.getUTCFullYear(),
-    date.getUTCMonth(),
-    date.getUTCDate(),
-    date.getUTCHours(),
-    date.getUTCMinutes(),
-    date.getUTCSeconds()
-  );
-  const thaiDate = new Date(utcTime + 7 * 60 * 60 * 1000);
-  return thaiDate.toISOString().split('T')[0];
-}
-
-function pickLatestByRoundDate(results: Array<{ roundDate: string }>): number {
-  let latestIdx = 0;
-  let latestTime = -Infinity;
-  for (let i = 0; i < results.length; i++) {
-    const t = new Date(results[i].roundDate).getTime();
-    if (t > latestTime) {
-      latestTime = t;
-      latestIdx = i;
-    }
-  }
-  return latestIdx;
+/** สรุปผลรันชุดเดียวกับ Cron (ใช้ตอบ HTTP manual / log) */
+export interface CronLatestPhathanaReport {
+  ok: boolean;
+  message: string;
+  laodl: { done: boolean; count: number; eligibleCount?: number; skippedFuture?: number; error?: string };
+  latest?: {
+    sourceId: number;
+    roundId?: number;
+    roundDate: string;
+    thaiDate: string;
+    winNumber?: string;
+  };
+  database: { savedCount: number };
+  sanook?: {
+    attempted: boolean;
+    matched: boolean;
+    updated: boolean;
+    note?: string;
+  };
 }
 
 async function findSanookByThaiDate(sanookScraper: SanookScraper, targetThaiDate: string) {
@@ -59,53 +41,116 @@ async function findSanookByThaiDate(sanookScraper: SanookScraper, targetThaiDate
 }
 
 /**
- * Cron ใหม่ (K=1):
- * - ดึง laodl เฉพาะงวดล่าสุด 1 งวด
- * - upsert ลง DB โดยปล่อย win_number/ค่าว่าง (ไม่ทับค่าจริง)
- * - enrich Sanook เฉพาะวันที่เดียว (และจะ update เฉพาะเมื่อได้ค่าจริง)
+ * Cron (K=1):
+ * - ดึง laodl แล้วเลือกเฉพาะงวดที่วันที่ออก (ปฏิทินไทย) ไม่เกิน "วันนี้" — ไม่เอางวดอนาคตที่ API อาจแทรกมา
+ * - จากนั้นเลือกงวดล่าสุด 1 งวด → upsert ลง DB → Sanook
  */
-export async function runCronLatestPhathana(env: Env): Promise<void> {
+export async function runCronLatestPhathana(env: Env): Promise<CronLatestPhathanaReport> {
   const scraper = new LotteryScraper();
   const db = new DatabaseManager(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
   const sanookScraper = new SanookScraper();
 
+  const report: CronLatestPhathanaReport = {
+    ok: false,
+    message: '',
+    laodl: { done: false, count: 0 },
+    database: { savedCount: 0 },
+    sanook: { attempted: false, matched: false, updated: false }
+  };
+
   try {
     console.log('[CRON] Fetch latest phathana (K=1) from laodl...');
     const phathanaResults = await scraper.getPhathanaResults();
-    if (!phathanaResults || phathanaResults.length === 0) {
-      console.warn('[CRON] No phathana results from laodl');
-      return;
+
+    if (phathanaResults === null) {
+      report.laodl = { done: true, count: 0, error: 'getPhathanaResults returned null (API error or invalid response)' };
+      report.message = 'ไม่ได้ข้อมูลจาก laodl (null)';
+      return report;
     }
 
-    const latestIdx = pickLatestByRoundDate(phathanaResults);
-    const latest = phathanaResults[latestIdx];
+    report.laodl = { done: true, count: phathanaResults.length };
 
-    const targetThaiDate = toThaiDate(latest.roundDate);
-    console.log(`[CRON] Latest roundDate=${latest.roundDate} (thaiDate=${targetThaiDate})`);
+    if (phathanaResults.length === 0) {
+      report.message = 'laodl ส่งรายการว่าง';
+      console.warn('[CRON] No phathana results from laodl');
+      return report;
+    }
 
-    // Upsert 1 งวดเพื่อสร้าง placeholder (ถ้า winNumber ว่าง) และค่อยอัปเดตเมื่อมีค่าจริง
-    await db.saveLotteryResults([latest], 'phathana');
+    const todayBangkok = getBangkokTodayYMD();
+    const eligible = filterByThaiCalendarNotAfterToday(phathanaResults);
+    const skipped = phathanaResults.length - eligible.length;
+    report.laodl.eligibleCount = eligible.length;
+    report.laodl.skippedFuture = skipped;
 
-    // Enrich Sanook เฉพาะวันเดียว
+    if (eligible.length === 0) {
+      report.message = `ทุกงวดใน laodl เป็นวันอนาคต (ปฏิทินไทย วันนี้=${todayBangkok}) — ไม่บันทึก DB`;
+      console.warn(`[CRON] All ${phathanaResults.length} rows are after today (Bangkok); skipped`);
+      return report;
+    }
+
+    if (skipped > 0) {
+      console.log(`[CRON] Ignored ${skipped} future draw row(s); using ${eligible.length} eligible row(s)`);
+    }
+
+    const latestIdx = pickLatestRoundDateIndex(eligible);
+    const latest = eligible[latestIdx];
+
+    const targetThaiDate = roundDateToThaiYMD(latest.roundDate);
+    if (!targetThaiDate) {
+      report.message = 'roundDate จาก laodl แปลงเป็นปฏิทินไทยไม่ได้ (ค่าไม่ถูกต้อง)';
+      return report;
+    }
+    report.latest = {
+      sourceId: latest.id,
+      roundId: latest.roundId,
+      roundDate: latest.roundDate,
+      thaiDate: targetThaiDate,
+      winNumber: latest.winNumber
+    };
+    console.log(`[CRON] Latest eligible roundDate=${latest.roundDate} (thaiDate=${targetThaiDate}, today Bangkok=${todayBangkok})`);
+
+    const savedCount = await db.saveLotteryResults([latest], 'phathana');
+    report.database.savedCount = savedCount;
+
+    if (savedCount < 1) {
+      report.message = 'ดึง laodl ได้แล้ว แต่บันทึกลง DB ไม่สำเร็จ (savedCount=0) — ดู log Error saving result';
+      return report;
+    }
+
+    report.sanook = { attempted: true, matched: false, updated: false };
+
     const sanook = await findSanookByThaiDate(sanookScraper, targetThaiDate);
     if (!sanook) {
+      report.sanook.note = `No matching Sanook for date=${targetThaiDate}`;
       console.warn(`[CRON][Sanook] No matching Sanook for date=${targetThaiDate}`);
-      return;
+      report.ok = true;
+      report.message = 'บันทึก laodl ลง DB แล้ว แต่ไม่จับคู่ Sanook ได้';
+      return report;
     }
+
+    report.sanook.matched = true;
 
     const hasRealAnimal = !!sanook.animalName && !sanook.animalName.match(/^x+$/i);
     const hasRealPhathanaSets = Array.isArray(sanook.phathanaNumbers) && sanook.phathanaNumbers.length > 0;
 
     if (hasRealAnimal && hasRealPhathanaSets) {
       await db.updateSanookData(targetThaiDate, sanook.animalName, sanook.phathanaNumbers, 'phathana');
+      report.sanook.updated = true;
+      report.sanook.note = 'Updated animal_name / phathana_numbers';
       console.log(`[CRON][Sanook] Updated animal_name/phathana_numbers for ${targetThaiDate}`);
-    } else {
-      // ไม่อัปเดตเมื่อเป็น placeholder เพื่อเลี่ยงการทับค่าจริงที่อาจมีอยู่แล้ว
-      console.warn(`[CRON][Sanook] Skip update (placeholder/missing) for ${targetThaiDate}`);
+      report.ok = true;
+      report.message = 'สำเร็จ: บันทึก laodl + อัปเดต Sanook';
+      return report;
     }
+
+    report.sanook.note = 'Skip update (placeholder/missing Sanook fields)';
+    console.warn(`[CRON][Sanook] Skip update (placeholder/missing) for ${targetThaiDate}`);
+    report.ok = true;
+    report.message = 'บันทึก laodl แล้ว — ข้ามอัปเดต Sanook (ข้อมูล placeholder)';
+    return report;
   } catch (error) {
     console.error('[CRON] Error:', error);
+    report.message = error instanceof Error ? error.message : String(error);
     throw error;
   }
 }
-

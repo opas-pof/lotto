@@ -5,6 +5,7 @@
 export interface LotteryResult {
   id: number;
   roundId: number;
+  /** วันเวลางวดจาก API laodl (ISO string) — เป็นค่าต้นทางเดียวสำหรับ instant / วันที่งวด */
   roundDate: string;
   roundNumber?: string;
   winNumber?: string;

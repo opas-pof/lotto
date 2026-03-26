@@ -6,6 +6,7 @@ import { LotteryScraper } from './scraper';
 import { SanookScraper, SanookLotteryResult } from './sanook-scraper';
 import { DatabaseManager } from './database';
 import { runCronLatestPhathana } from './cron-latest-phathana';
+import { roundDateToThaiYMD, filterByThaiCalendarNotAfterToday, getBangkokTodayYMD } from './thailand-date';
 
 export interface Env {
   SUPABASE_URL: string;
@@ -51,6 +52,17 @@ export default {
         });
       }
     }
+
+    // รันชุดเดียวกับ Cron (งวดล่าสุด K=1) — ใช้ทดสอบบน localhost หลัง npm run dev
+    if (url.pathname === '/api/run-cron-latest' || url.pathname === '/api/run-cron-latest/') {
+      if (request.method === 'POST') {
+        return handleRunCronLatest(env);
+      }
+      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+        status: 405,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
     
     // API endpoint สำหรับทดสอบ Sanook scraper
     if (url.pathname === '/api/test-sanook' || url.pathname === '/api/test-sanook/') {
@@ -91,7 +103,8 @@ export default {
     console.log('Cron trigger fired at:', new Date().toISOString());
 
     try {
-      await runCronLatestPhathana(env);
+      const report = await runCronLatestPhathana(env);
+      console.log('Cron report:', JSON.stringify(report));
       console.log('เสร็จสิ้น!');
     } catch (error) {
       console.error('เกิดข้อผิดพลาด:', error);
@@ -414,6 +427,20 @@ async function handleManualPage(): Promise<Response> {
             </div>
         </div>
 
+        <div class="date-selector" style="margin-top: 8px;">
+            <h3>⏱ รันแบบ Cron (localhost)</h3>
+            <p style="color: #666; font-size: 14px; margin-bottom: 15px;">
+                เรียก flow เดียวกับ scheduled worker: ดึง laodl งวดล่าสุด 1 งวด → บันทึก Supabase → Sanook ตาม logic ปัจจุบัน
+                (ต้องรัน <code>npm run dev</code> และมีไฟล์ <code>.dev.vars</code> ใส่ <code>SUPABASE_*</code> เหมือนที่ใช้บน Cloudflare)
+            </p>
+            <div class="date-controls">
+                <button type="button" class="btn-scrape" id="btnRunCronLatest" onclick="runCronLatestManual()" style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);">
+                    <span id="cronLatestIcon">▶</span>
+                    <span id="cronLatestText">รัน /api/run-cron-latest</span>
+                </button>
+            </div>
+        </div>
+
         <div class="button-group">
             <button class="btn-view" id="btnView" onclick="viewResults()">
                 <span id="viewIcon">👁️</span>
@@ -671,6 +698,45 @@ async function handleManualPage(): Promise<Response> {
             }
         }
 
+        async function runCronLatestManual() {
+            const btn = document.getElementById('btnRunCronLatest');
+            const status = document.getElementById('status');
+            const result = document.getElementById('result');
+            const icon = document.getElementById('cronLatestIcon');
+            const text = document.getElementById('cronLatestText');
+
+            btn.disabled = true;
+            icon.innerHTML = '<div class="spinner"></div>';
+            text.textContent = 'กำลังรัน...';
+            status.className = 'status loading show';
+            status.textContent = '⏳ กำลังรัน flow เดียวกับ Cron...';
+            result.classList.remove('show');
+
+            try {
+                const response = await fetch(\`\${API_BASE}/api/run-cron-latest\`, { method: 'POST' });
+                const data = await response.json().catch(() => ({}));
+                result.classList.add('show');
+                result.innerHTML = \`<h3>ผลรัน POST /api/run-cron-latest</h3><p style="color:#666;font-size:13px;">HTTP \${response.status}</p><pre style="white-space:pre-wrap;font-size:13px;background:#f8f9fa;padding:12px;border-radius:8px;overflow:auto;max-height:420px;">\${JSON.stringify(data, null, 2)}</pre>\`;
+
+                if (response.ok && data.success) {
+                    status.className = 'status success show';
+                    status.textContent = '✅ รันสำเร็จ — ดูรายละเอียดในกล่องด้านล่าง';
+                } else {
+                    status.className = 'status error show';
+                    status.textContent = '⚠️ ดูรายละเอียดใน JSON (อาจดึง laodl ไม่ได้ / บันทึก DB ไม่สำเร็จ)';
+                }
+            } catch (error) {
+                status.className = 'status error show';
+                status.textContent = \`❌ \${error.message}\`;
+                result.classList.add('show');
+                result.innerHTML = \`<p style="color:#721c24;">\${error.message}</p>\`;
+            } finally {
+                btn.disabled = false;
+                icon.textContent = '▶';
+                text.textContent = 'รัน /api/run-cron-latest';
+            }
+        }
+
         async function viewResults() {
             const btn = document.getElementById('btnView');
             const status = document.getElementById('status');
@@ -907,45 +973,6 @@ async function handleManualPage(): Promise<Response> {
 }
 
 /**
- * แปลงวันที่เป็นเวลาไทย (UTC+7)
- * API laodl.com ส่งวันที่มาในรูปแบบ ISO string (อาจเป็น UTC หรือ local time)
- * ต้องแปลงเป็นเวลาไทยเสมอ
- */
-function toThaiDate(dateString: string): string {
-  // สร้าง Date object จาก string
-  const date = new Date(dateString);
-  
-  // ตรวจสอบว่า dateString มี timezone indicator หรือไม่
-  // ถ้ามี Z หรือ +00:00 หรือ +0000 แสดงว่าเป็น UTC
-  const isUTC = dateString.includes('Z') || 
-                dateString.includes('+00:00') || 
-                dateString.includes('+0000') ||
-                dateString.match(/\+00:00$/) ||
-                dateString.match(/\+0000$/);
-  
-  if (isUTC) {
-    // แปลงจาก UTC เป็นเวลาไทย (UTC+7)
-    const thaiDate = new Date(date.getTime() + (7 * 60 * 60 * 1000));
-    return thaiDate.toISOString().split('T')[0]; // YYYY-MM-DD
-  } else {
-    // ถ้าไม่มี timezone indicator อาจเป็น local time
-    // แต่เพื่อความปลอดภัย ให้ assume ว่าเป็น UTC และแปลงเป็นเวลาไทย
-    // (เพราะ JavaScript Date จะ interpret เป็น local time ถ้าไม่มี timezone)
-    // ใช้วิธี: สร้าง Date object แล้วแปลงเป็น UTC ก่อน แล้วค่อยบวก 7 ชั่วโมง
-    const utcTime = Date.UTC(
-      date.getUTCFullYear(),
-      date.getUTCMonth(),
-      date.getUTCDate(),
-      date.getUTCHours(),
-      date.getUTCMinutes(),
-      date.getUTCSeconds()
-    );
-    const thaiDate = new Date(utcTime + (7 * 60 * 60 * 1000));
-    return thaiDate.toISOString().split('T')[0]; // YYYY-MM-DD
-  }
-}
-
-/**
  * แปลงวันที่เป็นเวลาไทยสำหรับแสดงผล
  */
 function formatThaiDateTime(dateString: string): string {
@@ -973,13 +1000,19 @@ async function handleGetAvailableDates(env: Env): Promise<Response> {
     // ดึงข้อมูลผลหวยทั้งสองประเภท
     const allResults = await scraper.getAllResults();
     
-    // รวบรวมวันที่ทั้งหมด (unique) - แปลงเป็นเวลาไทย
+    const todayBangkok = getBangkokTodayYMD();
     const dates = new Set<string>();
-    
+
     if (allResults.phathana) {
       allResults.phathana.forEach(item => {
-        const date = toThaiDate(item.roundDate); // แปลงเป็นเวลาไทย
-        dates.add(date);
+        const date = roundDateToThaiYMD(item.roundDate);
+        if (date && date <= todayBangkok) dates.add(date);
+      });
+    }
+    if (allResults.lasi) {
+      allResults.lasi.forEach(item => {
+        const date = roundDateToThaiYMD(item.roundDate);
+        if (date && date <= todayBangkok) dates.add(date);
       });
     }
     
@@ -1006,6 +1039,41 @@ async function handleGetAvailableDates(env: Env): Promise<Response> {
         'Content-Type': 'application/json; charset=utf-8'
       }
     });
+  }
+}
+
+/**
+ * POST /api/run-cron-latest — รันชุดเดียวกับ scheduled cron (งวดล่าสุด 1 งวด + Sanook ตาม logic เดิม)
+ * ใช้ทดสอบหลัง `npm run dev` (localhost) เมื่อมีไฟล์ .dev.vars ครบ
+ */
+async function handleRunCronLatest(env: Env): Promise<Response> {
+  try {
+    const report = await runCronLatestPhathana(env);
+    const status = report.ok ? 200 : 422;
+    return new Response(
+      JSON.stringify({ success: report.ok, report }, null, 2),
+      {
+        status,
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Access-Control-Allow-Origin': '*'
+        }
+      }
+    );
+  } catch (error) {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
+      }, null, 2),
+      {
+        status: 500,
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Access-Control-Allow-Origin': '*'
+        }
+      }
+    );
   }
 }
 
@@ -1047,14 +1115,13 @@ async function handleScrape(request: Request, env: Env): Promise<Response> {
     phathanaResults = await scraper.getPhathanaResults();
     
     if (phathanaResults && phathanaResults.length > 0) {
-      // Filter ตามวันที่ถ้ามีการระบุ
+      phathanaResults = filterByThaiCalendarNotAfterToday(phathanaResults);
       if (targetDate) {
         phathanaResults = phathanaResults.filter(item => {
-          const itemDate = toThaiDate(item.roundDate);
-          return itemDate === targetDate;
+          const itemDate = roundDateToThaiYMD(item.roundDate);
+          return itemDate !== '' && itemDate === targetDate;
         });
       } else {
-        // ถ้าไม่ระบุ date = เอาแค่ 5 รายการล่าสุด
         phathanaResults = phathanaResults
           .sort((a, b) => new Date(b.roundDate).getTime() - new Date(a.roundDate).getTime())
           .slice(0, 5);
