@@ -12,12 +12,12 @@ compatibility_date = "2024-11-27"
 # [vars]
 # SUPABASE_URL = "https://your-project.supabase.co"  # ไม่แนะนำ - จะ commit ขึ้น git
 
-# Cron Triggers - รันทุกวันจันทร์, พุธ, ศุกร์ เวลา 20:30 น. (ไทย = UTC+7)
+# Cron Triggers - รันทุกวันจันทร์, อังคาร, พุธ, พฤหัสบดี, ศุกร์ เวลา 21:00 น. (ไทย = UTC+7)
 # หมายเหตุ: Cloudflare Workers ใช้ UTC time
-# 20:30 น. (UTC+7) = 13:30 UTC
+# 21:00 น. (UTC+7) = 14:00 UTC
 # Cloudflare cron: 1=Sunday, 2=Monday, 3=Tuesday, 4=Wednesday, 5=Thursday, 6=Friday, 7=Saturday
 [triggers]
-crons = ["30 13 * * 2,4,6"] # จันทร์(2), พุธ(4), ศุกร์(6) เวลา 13:30 UTC = 20:30 น. ไทย
+crons = ["0 14 * * 2-6"] # จันทร์(2) ถึง ศุกร์(6) เวลา 14:00 UTC = 21:00 น. ไทย
 
 # หมายเหตุ: สำหรับ secrets (SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY)
 # ใช้คำสั่ง: wrangler secret put <NAME>
